@@ -671,6 +671,51 @@ runter“), ist damit noch nicht erklärt — die nächste Frage ist, ob es um d
 Start „IN DER LUFT“ ging (dort steht der Schub auf 0,75, das Flugzeug hält
 die Höhe) oder um einen Überzieher, der nicht kommt.
 
+## Fahrwerk auf dem Boden, Klappen, die ausfahren (23.09.2026)
+
+**Das Fahrwerk steckte im Boden**, weil das Modell an seinem Bezugspunkt
+gezeichnet wurde und darunter noch 2,8 m Flugzeug hängen. Beim Laden merkt
+sich jedes Modell jetzt seinen **tiefsten Punkt** (`terrain.low`), und
+gezeichnet wird um diesen Betrag angehoben — die Räder berühren den Boden,
+nicht der Bezugspunkt. Vorher stand da ein fester Meter, mit der c172 im Sinn.
+
+**Die Klappen fuhren nicht aus, weil unsere Modelle starr waren.** FlightGear
+beschreibt jede Bewegung als `<animation>` in der Modell-XML:
+
+    <animation><type>rotate</type><object-name>FlapL1</object-name>
+      <property>surface-positions/flap-pos-norm</property>
+      <axis><x1-m>6.08</x1-m>...<z2-m>-0.31</z2-m></axis>
+
+`acbake.py` liest die Drehungen jetzt mit (Klappen, Quer-, Höhen- und
+Seitenruder — das Fahrwerk bleibt vorerst starr, dessen Einfahrsequenz hat
+zwei Dutzend Teile), gibt jedem beweglichen Objekt eine **eigene Gruppe** und
+schreibt sie als Anhang ins Bündel:
+
+    Flagge 2 -> nach den Indizes: je Gruppe die Nummer ihrer Drehung,
+                dann je Drehung Art, Achse (zwei Punkte) und Grad je Einheit
+
+Der Renderer dreht die Gruppe beim Zeichnen um genau diese Achse
+(`terrain_set_controls()` bekommt Klappen und Ruder aus dem Cockpit).
+Gefunden werden beim A320 vier Klappen und ihre Verkleidungen.
+
+Zwei Dinge dabei: die Modelle setzen ihre Drehungen oft **ineinander**
+zusammen (eine Klappe fährt aus *und* dreht sich), wir nehmen nur eine davon
+— deshalb ist der Ausschlag gedeckelt (Klappen 40°, Ruder 25–30°), sonst
+stünde eine Klappe senkrecht. Und seit bewegliche Teile eigene Gruppen haben,
+kommt dieselbe Textur mehrfach vor: `acbake.py` schreibt sie nur einmal, und
+der Renderer lädt sie nur einmal — sonst lägen zwei Megabyte fünfmal im
+Speicher.
+
+**Und eine Falle in der Modellgeometrie:** in FlightGears Modellachsen zeigt
+`y` nach **rechts**, in der `.ac`-Datei zeigt `+z` nach **links** (am c172
+abgelesen). Die Versatzwerte aus der XML brauchen deshalb ein Minus — vorher
+saßen linke und rechte Teile vertauscht, was bei symmetrischen Flugzeugen
+niemandem auffällt.
+
+**Noch nicht am Gerät gesehen:** die N950 war beim Prüfen aus dem Netz
+verschwunden. `COCKPIT_FLAPS=1` setzt die Klappen beim Start, damit man es
+ohne Finger sieht.
+
 ## Was als Nächstes drangehört
 
 1. Ein feineres Bild für die Kachel unter einem (2048 statt 512).

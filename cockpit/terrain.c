@@ -218,6 +218,13 @@ static void load_group_textures(struct terrain *t, const char *path) {
     const char *dot = strrchr(path, '.');
     int stem = dot ? (int)(dot - path) : (int)strlen(path);
     for (int g = 0; g < t->ngroups; ++g) {
+        /* Seit die beweglichen Teile eigene Gruppen haben, kommt dieselbe
+           Textur mehrfach vor - dann nur einmal laden, sonst liegen zwei
+           Megabyte fuenfmal im Speicher. */
+        int seen = -1;
+        for (int k = 0; k < g && seen < 0; ++k)
+            if (!strcmp(t->group[k].name, t->group[g].name)) seen = k;
+        if (seen >= 0) { t->group[g].tex = t->group[seen].tex; continue; }
         char name[32];
         snprintf(name, sizeof(name), "%s", t->group[g].name);
         char *ext = strrchr(name, '.');
@@ -277,6 +284,32 @@ int terrain_load(struct terrain *t, const char *path, struct terrain_frame *fram
     size_t ibytes = (size_t)ni * (t->wide ? 4 : 2);
     unsigned char *idx = malloc(ibytes);
     if (!idx || fread(idx, 1, ibytes, f) != ibytes) { free(raw); free(idx); fclose(f); return 0; }
+
+    /* Anhang (Flagge 2): je Gruppe die Nummer ihrer Drehung, dann die
+       Drehungen - Klappen und Ruder.  Wer den Anhang nicht kennt, hoert
+       vorher auf, deshalb steht er ganz hinten. */
+    for (int i = 0; i < TERRAIN_GROUPS; ++i) t->group[i].anim = -1;
+    t->nanim = 0;
+    if (flags & 2) {
+        uint32_t na = 0;
+        if (fread(&na, 4, 1, f) == 1 && na <= TERRAIN_GROUPS) {
+            for (unsigned int i = 0; i < ng; ++i) {
+                int32_t a = -1;
+                if (fread(&a, 4, 1, f) != 1) break;
+                if (i < (unsigned int)t->ngroups) t->group[i].anim = a;
+            }
+            for (uint32_t i = 0; i < na; ++i) {
+                uint32_t kind = 0;
+                float v[7];
+                if (fread(&kind, 4, 1, f) != 1 || fread(v, 4, 7, f) != 7) break;
+                t->anim[i].kind = (int)kind;
+                for (int k = 0; k < 3; ++k) t->anim[i].p1[k] = v[k];
+                for (int k = 0; k < 3; ++k) t->anim[i].p2[k] = v[3 + k];
+                t->anim[i].factor = v[6];
+                ++t->nanim;
+            }
+        }
+    }
     fclose(f);
 
     t->is_model = (t->center[0] == 0.0 && t->center[1] == 0.0 && t->center[2] == 0.0);
@@ -327,6 +360,18 @@ int terrain_load(struct terrain *t, const char *path, struct terrain_frame *fram
         n[2] = (signed char)(nx * up[0] + ny * up[1] + nz * up[2]);
     }
     free(raw);
+
+    /* Der tiefste Punkt des Modells: dort stehen die Raeder.  Das Flugzeug
+       wird um diesen Betrag angehoben gezeichnet, sonst steckt das Fahrwerk
+       im Boden - beim A320 sind es 2,8 m, bei der c172 gut einer. */
+    {
+        float low = 1e30f;
+        for (unsigned int i = 0; i < nv; ++i) {
+            const float *p = (const float *)(gpu + (size_t)i * vstride);
+            if (p[2] < low) low = p[2];
+        }
+        t->low = low < 1e29f ? low : 0.0f;
+    }
 
     /* Wie hoch liegt der Boden in der Mitte?  Ohne das setzt ein Start "am
        Boden" die Kamera auf null - und die Kachel liegt hier 180 m hoeher,
@@ -572,6 +617,37 @@ int terrain_height_at(const struct terrain *t, float east, float north, float *h
     return 1;
 }
 
+static float controls[4];
+
+void terrain_set_controls(const float values[4]) {
+    for (int i = 0; i < 4; ++i) controls[i] = values[i];
+}
+
+/* Drehung um eine Achse durch zwei Punkte, als Matrix fuer den Shader.
+   Rodrigues, von Hand: erst an den Anfangspunkt, drehen, zurueck. */
+static void axis_rotation(float out[16], const float p1[3], const float p2[3],
+                          float angle_deg) {
+    float ax = p2[0] - p1[0], ay = p2[1] - p1[1], az = p2[2] - p1[2];
+    float len = sqrtf(ax * ax + ay * ay + az * az);
+    if (len < 1e-6f) { memset(out, 0, 64); out[0] = out[5] = out[10] = out[15] = 1.0f; return; }
+    ax /= len; ay /= len; az /= len;
+    float a = angle_deg * (float)M_PI / 180.0f;
+    float c = cosf(a), s = sinf(a), t = 1.0f - c;
+    float r[9] = {
+        t * ax * ax + c,      t * ax * ay - s * az, t * ax * az + s * ay,
+        t * ax * ay + s * az, t * ay * ay + c,      t * ay * az - s * ax,
+        t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c
+    };
+    /* Spaltenweise, wie GL es erwartet, mit der Verschiebung um den Punkt. */
+    out[0] = r[0]; out[1] = r[3]; out[2] = r[6];  out[3] = 0.0f;
+    out[4] = r[1]; out[5] = r[4]; out[6] = r[7];  out[7] = 0.0f;
+    out[8] = r[2]; out[9] = r[5]; out[10] = r[8]; out[11] = 0.0f;
+    for (int i = 0; i < 3; ++i)
+        out[12 + i] = p1[i] - (r[i * 3 + 0] * p1[0] + r[i * 3 + 1] * p1[1]
+                               + r[i * 3 + 2] * p1[2]);
+    out[15] = 1.0f;
+}
+
 void terrain_drop_texture(struct terrain *t) {
     if (t->tex) {
         glDeleteTextures(1, &t->tex);
@@ -607,6 +683,18 @@ void terrain_draw(const struct terrain *t, const float mvp[16], const float ligh
         for (int i = 0; i < t->ngroups; ++i) {
             glBindTexture(GL_TEXTURE_2D, t->group[i].tex ? t->group[i].tex : white_texture());
             glUniform3fv(t->u_col, 1, t->group[i].tex ? white : t->group[i].col);
+            /* Bewegliches Teil: um seine Achse drehen, so weit die Steuerung
+               steht.  Der Rest des Flugzeugs bleibt, wie er ist. */
+            int an = t->group[i].anim;
+            if (an >= 0 && an < t->nanim) {
+                float rot[16], m[16];
+                axis_rotation(rot, t->anim[an].p1, t->anim[an].p2,
+                              t->anim[an].factor * controls[t->anim[an].kind & 3]);
+                mat_mul(m, mvp, rot);
+                glUniformMatrix4fv(t->u_mvp, 1, GL_FALSE, m);
+            } else {
+                glUniformMatrix4fv(t->u_mvp, 1, GL_FALSE, mvp);
+            }
             glDrawElements(GL_TRIANGLES, t->group[i].count,
                            t->wide ? GL_UNSIGNED_INT : GL_UNSIGNED_SHORT,
                            (const void *)(size_t)(t->group[i].start * (t->wide ? 4 : 2)));

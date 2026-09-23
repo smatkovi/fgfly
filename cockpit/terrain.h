@@ -34,12 +34,22 @@ struct terrain {
         float col[3];
         char name[32];
         GLuint tex;                 /* nur bei Modellen: eigene Textur je Gruppe */
+        int anim;                   /* Nummer der Drehung oder -1 */
     } group[TERRAIN_GROUPS];
+    /* Bewegliche Teile: Klappen, Quer-, Hoehen- und Seitenruder.  Jede Drehung
+       hat eine Achse (zwei Punkte) und sagt, wieviel Grad je Einheit der
+       Steuerung. */
+    struct {
+        int kind;
+        float p1[3], p2[3], factor;
+    } anim[TERRAIN_GROUPS];
+    int nanim;
     int is_model;                   /* Mittelpunkt (0,0,0): ein Flugzeug, kein Stueck Erde */
     double center[3];
     float local_center[3];      /* Mittelpunkt im System der ersten Kachel */
     float radius;
     float centre_height;        /* Gelaendehoehe in der Mitte der Kachel */
+    float low;                  /* tiefster Punkt (Modelle: die Raeder) */
     /* Ein grobes Hoehenraster ueber die Kachel: je Zelle der hoechste Punkt.
        Damit weiss das Flugmodell, wie hoch der Boden unter dem Flugzeug
        liegt - ohne das faellt man durch Berge hindurch. */
@@ -54,6 +64,11 @@ void terrain_draw(const struct terrain *t, const float mvp[16], const float ligh
 /* Nimmt der Kachel ihr gebackenes Bild - dann wird wieder nach Material
    gezeichnet (Flugplaetze, wo die Bahn scharf sein soll). */
 void terrain_drop_texture(struct terrain *t);
+
+/* Wie weit sind Klappen und Ruder gerade ausgeschlagen (0 = Klappen,
+   1 = Querruder, 2 = Hoehenruder, 3 = Seitenruder)?  Klappen 0..1, die Ruder
+   -1..+1. */
+void terrain_set_controls(const float values[4]);
 
 /* Wie hoch liegt der Boden an dieser Stelle?  1, wenn die Kachel die Stelle
    ueberhaupt deckt. */

@@ -1664,6 +1664,7 @@ int main(int argc, char **argv) {
         fdm.on_ground = 0;
     }
     if (getenv("COCKPIT_SPEED")) fdm.v_ms = (float)atof(getenv("COCKPIT_SPEED")) / 1.94384f;
+    if (getenv("COCKPIT_FLAPS")) flaps = (float)atof(getenv("COCKPIT_FLAPS"));
     if (getenv("COCKPIT_HDG")) fdm.heading_deg = (float)atof(getenv("COCKPIT_HDG"));
     if (getenv("COCKPIT_VIEW")) view_mode = atoi(getenv("COCKPIT_VIEW")) % 3;
     const char *mpath = getenv("COCKPIT_MODEL");
@@ -1866,7 +1867,13 @@ int main(int argc, char **argv) {
             if (!fdm.on_ground && fdm.alt_m > 300.0f) sp = -0.2f;
         }
         if (!screen_start)
-            fdm_step(&fdm, acft, dt, sr, sp, rudder, throttle, flaps, brake, gear_down);
+            /* Was die Steuerung sagt, sollen auch die Klappen und Ruder am Modell
+           zeigen - solange das Flugzeug sie mitbringt. */
+        {
+            float surfaces[4] = { flaps, sr, sp, rudder };
+            terrain_set_controls(surfaces);
+        }
+        fdm_step(&fdm, acft, dt, sr, sp, rudder, throttle, flaps, brake, gear_down);
         /* Das Seitenruder federt zurueck, sobald der Finger weg ist. */
         if (touch_fd < 0 ? !dragging : touch_now.n == 0) {
             rudder -= rudder * (dt * 4.0f > 1.0f ? 1.0f : dt * 4.0f);
@@ -1941,7 +1948,9 @@ int main(int argc, char **argv) {
             /* Das Flugzeug selbst - nur von aussen zu sehen. */
             if (have_model && view_mode == 2) {
                 float m[16], mvp_model[16];
-                float pos[3] = { fdm.east_m, fdm.north_m, fdm.alt_m + 1.0f };
+                /* Angehoben um den tiefsten Punkt des Modells: die Raeder
+                   sollen den Boden beruehren, nicht der Bezugspunkt. */
+                float pos[3] = { fdm.east_m, fdm.north_m, fdm.alt_m - model.low };
                 mat_model(m, pos, fdm.heading_deg, fdm.pitch_deg, fdm.roll_deg);
                 mat_mul(mvp_model, mvp, m);
                 glDisable(GL_CULL_FACE);     /* die Modelle sind nicht durchweg richtig herum */

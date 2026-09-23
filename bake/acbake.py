@@ -49,21 +49,96 @@ def _text(node, tag):
     return (e.text or "").strip() if e is not None and e.text else ""
 
 
-def _offsets(node):
-    """FlightGears Metermasse -> die Achsen der AC3D-Datei.
+def _num(node, tag):
+    try:
+        return float(_text(node, tag))
+    except ValueError:
+        return 0.0
 
-    In der XML heisst x nach hinten, y nach rechts, z nach oben; in der `.ac`
-    sind es x nach hinten, y nach oben, z nach rechts.  Gedreht wird nichts -
-    Winkel kommen im Aussenmodell praktisch nicht vor."""
+
+def fg_to_ac(x, y, z):
+    """FlightGears Modellachsen -> die der AC3D-Datei.
+
+    In der XML heisst x nach hinten, y nach **rechts**, z nach oben; in der
+    `.ac` ist x nach hinten, y nach oben und **+z nach links** (am c172
+    abgelesen: die linke Flaeche liegt bei z = +5,4).  Daher das Minus."""
+    return (x, z, -y)
+
+
+def _offsets(node):
     if node is None:
         return (0.0, 0.0, 0.0)
-    def f(tag):
-        t = _text(node, tag)
+    return fg_to_ac(_num(node, "x-m"), _num(node, "y-m"), _num(node, "z-m"))
+
+
+# Welche Steuerung bewegt was?  Mehr als diese fuenf sieht man von aussen
+# ohnehin nicht.
+ANIM_KINDS = (("flap", 0), ("aileron", 1), ("elevator", 2), ("rudder", 3))
+ANIM_NAMES = ("Klappen", "Querruder", "Hoehenruder", "Seitenruder")
+# Was hier steht, bewegt sich hoechstens so weit.  Die Modelle setzen ihre
+# Drehungen oft aus mehreren ineinander zusammen (eine Klappe faehrt aus *und*
+# dreht sich); wir nehmen nur eine davon, und ohne Deckel kaeme eine Klappe
+# heraus, die senkrecht steht.
+ANIM_MAX = (40.0, 25.0, 25.0, 30.0)
+
+
+def anim_kind(prop):
+    low = prop.lower()
+    for key, kind in ANIM_KINDS:
+        if key in low:
+            return kind
+    return -1
+
+
+def read_animations(root, base_offset, out):
+    """Die Drehungen aus einer Modelldatei: welches Objekt sich um welche
+    Achse dreht, und wie weit je Einheit der Steuerung."""
+    for a in root.findall("animation"):
+        if _text(a, "type") != "rotate":
+            continue
+        kind = anim_kind(_text(a, "property"))
+        if kind < 0:
+            continue
+        names = [(o.text or "").strip() for o in a.findall("object-name") if o.text]
+        if not names:
+            continue
+        axis = a.find("axis")
+        if axis is None:
+            continue
+        if axis.find("x1-m") is not None:
+            p1 = fg_to_ac(_num(axis, "x1-m"), _num(axis, "y1-m"), _num(axis, "z1-m"))
+            p2 = fg_to_ac(_num(axis, "x2-m"), _num(axis, "y2-m"), _num(axis, "z2-m"))
+        else:
+            centre = _offsets(a.find("center"))
+            d = fg_to_ac(_num(axis, "x"), _num(axis, "y"), _num(axis, "z"))
+            p1 = centre
+            p2 = (centre[0] + d[0], centre[1] + d[1], centre[2] + d[2])
+        factor = _text(a, "factor")
         try:
-            return float(t)
+            factor = float(factor)
         except ValueError:
-            return 0.0
-    return (f("x-m"), f("z-m"), f("y-m"))
+            factor = 0.0
+        if not factor:
+            # Statt eines Faktors steht manchmal eine Tabelle da; der groesste
+            # Ausschlag darin tut es fuer uns.
+            for e in a.iter("entry"):
+                try:
+                    dep = float(_text(e, "dep"))
+                except ValueError:
+                    continue
+                if abs(dep) > abs(factor):
+                    factor = dep
+        if not factor:
+            continue
+        cap = ANIM_MAX[kind]
+        if factor > cap:
+            factor = cap
+        elif factor < -cap:
+            factor = -cap
+        p1 = add3(base_offset, p1)
+        p2 = add3(base_offset, p2)
+        out.append({"kind": kind, "names": names, "p1": p1, "p2": p2,
+                    "factor": factor})
 
 
 def _resolve(raw, base_dir, pkg_dir):
@@ -76,8 +151,9 @@ def _resolve(raw, base_dir, pkg_dir):
     return os.path.join(base_dir, raw)
 
 
-def model_parts(xml_path, pkg_dir, offset=(0.0, 0.0, 0.0), depth=0):
-    """Die `.ac`-Teile eines XML-Modells, jedes mit seiner Lage im Flugzeug."""
+def model_parts(xml_path, pkg_dir, offset=(0.0, 0.0, 0.0), depth=0, anims=None):
+    """Die `.ac`-Teile eines XML-Modells, jedes mit seiner Lage im Flugzeug -
+    und nebenbei, was sich daran bewegt."""
     import xml.etree.ElementTree as ET
     out = []
     if depth > 6:
@@ -92,9 +168,12 @@ def model_parts(xml_path, pkg_dir, offset=(0.0, 0.0, 0.0), depth=0):
     if sim is not None and sim.find("model") is not None:      # eine -set.xml
         path = _text(sim.find("model"), "path")
         if path:
-            return model_parts(_resolve(path, base, pkg_dir), pkg_dir, offset, depth + 1)
+            return model_parts(_resolve(path, base, pkg_dir), pkg_dir, offset,
+                               depth + 1, anims)
         return out
     here = add3(offset, _offsets(root.find("offsets")))
+    if anims is not None:
+        read_animations(root, here, anims)
     own = _text(root, "path")
     if own:
         p = _resolve(own, base, pkg_dir)
@@ -112,7 +191,7 @@ def model_parts(xml_path, pkg_dir, offset=(0.0, 0.0, 0.0), depth=0):
         p = _resolve(path, base, pkg_dir)
         off = add3(here, _offsets(m.find("offsets")))
         if p.endswith(".xml") and os.path.isfile(p):
-            out += model_parts(p, pkg_dir, off, depth + 1)
+            out += model_parts(p, pkg_dir, off, depth + 1, anims)
         elif p.endswith(".ac") and os.path.isfile(p) and os.path.getsize(p) > 400:
             out.append((p, off))
     return out
@@ -277,12 +356,17 @@ def flatten(obj, xform, out, keep_inside):
         flatten(kid, (child_off, None), out, keep_inside)
 
 
-def build(objects, materials):
-    """Zu Dreiecken auflösen, nach Textur gruppieren, Normalen mitteln."""
+def build(objects, materials, anim_of=None):
+    """Zu Dreiecken aufloesen, nach Textur gruppieren, Normalen mitteln.
+
+    Was sich bewegt, bekommt eine eigene Gruppe: der Renderer dreht sie beim
+    Zeichnen, und dazu muss sie fuer sich stehen."""
     groups = {}
     for obj, verts in objects:
-        key = obj.texture or "(ohne)"
-        g = groups.setdefault(key, {"vertices": [], "index": [], "unique": {}})
+        anim = (anim_of or {}).get(obj.name, -1)
+        key = (obj.texture or "(ohne)", anim)
+        g = groups.setdefault(key, {"vertices": [], "index": [], "unique": {},
+                                    "anim": anim, "tex": obj.texture or "(ohne)"})
         for mat, refs in obj.surfs:
             if len(refs) < 3:
                 continue
@@ -319,9 +403,12 @@ def build(objects, materials):
     return groups
 
 
-def write_bundle(path, groups):
+def write_bundle(path, groups, anims=()):
     vertices, indices, ranges = [], [], []
-    for name, g in groups.items():
+    group_anim = []
+    for key, g in groups.items():
+        name = g["tex"] if isinstance(key, tuple) else key
+        group_anim.append(g.get("anim", -1))
         base = len(vertices)
         start = len(indices)
         for v in g["vertices"]:
@@ -335,7 +422,7 @@ def write_bundle(path, groups):
     names = b"".join(n.encode("latin-1") + b"\0" for n, _s, _c in ranges)
     with open(path, "wb") as f:
         f.write(b"FGB1")
-        f.write(struct.pack("<I", 1 if wide else 0))
+        f.write(struct.pack("<I", (1 if wide else 0) | (2 if anims else 0)))
         f.write(struct.pack("<ddd", 0.0, 0.0, 0.0))      # Modell, kein Ort
         f.write(struct.pack("<f", 10.0))
         f.write(struct.pack("<III", len(vertices), len(indices), len(ranges)))
@@ -350,6 +437,17 @@ def write_bundle(path, groups):
                                 max(-127, min(127, int(round(normal[2] * 127)))),
                                 uv[0], uv[1]))
         f.write(struct.pack("<%d%s" % (len(indices), "I" if wide else "H"), *indices))
+        # Der Anhang fuer bewegliche Teile: je Gruppe die Nummer der Drehung
+        # (oder -1), dann die Drehungen selbst.  Alte Leser hoeren vor dem
+        # Anhang auf, das Kennzeichen dafuer steht im Flaggenwort (Bit 1).
+        if anims:
+            f.write(struct.pack("<I", len(anims)))
+            f.write(struct.pack("<%di" % len(group_anim), *group_anim))
+            for a in anims:
+                f.write(struct.pack("<I6ff", a["kind"],
+                                    a["p1"][0], a["p1"][1], a["p1"][2],
+                                    a["p2"][0], a["p2"][1], a["p2"][2],
+                                    float(a["factor"])))
     return len(vertices), len(indices), ranges
 
 
@@ -387,7 +485,11 @@ def write_textures(folders, pkg_dir, out_path, ranges):
     from matcolors import png_average       # nur um den Leser zu teilen
     stem = os.path.splitext(out_path)[0]
     made = 0
+    written = set()
     for name, _s, _c in ranges:
+        if name in written:            # dieselbe Textur, mehrere Gruppen
+            continue
+        written.add(name)
         src = find_texture(name, folders, pkg_dir)
         if not src:
             print("    Bild fehlt: %s" % name)
@@ -505,10 +607,10 @@ def main():
     ac_path, out_path = sys.argv[1], sys.argv[2]
     keep_inside = "--innen" in sys.argv
 
-    objects, materials, folders = [], [], []
+    objects, materials, folders, anims = [], [], [], []
     pkg = package_dir(ac_path)
     if ac_path.endswith(".xml"):
-        parts = model_parts(ac_path, pkg)
+        parts = model_parts(ac_path, pkg, anims=anims)
         if not parts:
             sys.exit("keine .ac-Teile in %s" % ac_path)
         print("%s: %d Teile" % (os.path.basename(ac_path), len(parts)))
@@ -527,8 +629,25 @@ def main():
         flatten(root, ((0.0, 0.0, 0.0), None), objects, keep_inside)
         folders = [os.path.dirname(os.path.abspath(ac_path))]
 
-    groups = build(objects, materials)
-    nv, ni, ranges = write_bundle(out_path, groups)
+    # Welches Objekt dreht sich wie?  Die Namen stehen in der Animation, die
+    # Objekte in der `.ac` - was nirgends vorkommt, faellt weg.
+    anim_of = {}
+    used = []
+    for a in anims:
+        have = [o for o, _v in objects if o.name in a["names"]]
+        if not have:
+            continue
+        idx = len(used)
+        used.append(a)
+        for o in have:
+            anim_of[o.name] = idx
+    if used:
+        print("  bewegliche Teile:")
+        for i, a in enumerate(used):
+            print("    %-12s %-28s %+7.1f Grad je Einheit" %
+                  (ANIM_NAMES[a["kind"]], ",".join(a["names"])[:28], a["factor"]))
+    groups = build(objects, materials, anim_of)
+    nv, ni, ranges = write_bundle(out_path, groups, used)
     made = write_textures(folders, pkg, out_path, ranges)
 
     print("%s -> %s" % (os.path.basename(ac_path), out_path))
