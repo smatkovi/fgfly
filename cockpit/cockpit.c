@@ -1358,6 +1358,22 @@ static void start_flight(void) {
    je Sekunde also dreissigmal), und was am Ende herauskommt, ist Zufall.  Das
    war es, was die Bremse nicht loesbar und die Ansicht nicht waehlbar machte.
    Die Schieber - Schub, Klappen, Seitenruder - folgen weiter jedem Bild. */
+/* Liegt der Punkt auf einem Bedienteil?  Genau die Rechtecke, die auch
+   gezeichnet werden.  Frueher stand dafuer in der Gestenentscheidung ein
+   grober Rahmen (die aeusseren 17 Prozent ringsum), und alles darin galt als
+   Bedienung - in der Verfolgersicht blieb zum Drehen nur die Bildmitte. */
+static int on_widget(float x, float y) {
+    if (y < 0.115f && x > 0.90f) return 1;                  /* das Kreuz */
+    if (y < 0.13f && x > 0.12f && x < 0.29f) return 1;      /* Ansicht */
+    if (y < 0.13f && x > 0.29f && x < 0.45f) return 1;      /* Anlasser */
+    if (x < 0.16f && y > 0.13f && y < 0.87f) return 1;      /* Schubhebel */
+    if (x > 0.84f && y > 0.13f && y < 0.87f) return 1;      /* Klappen */
+    if (y > 0.85f && x < 0.15f) return 1;                   /* Fahrwerk */
+    if (y > 0.87f && x > 0.74f && x < 0.88f) return 1;      /* Bremse */
+    if (y > 0.90f && x > 0.20f && x < 0.64f) return 1;      /* Seitenruder */
+    return 0;
+}
+
 static void touch(int px, int py, int width, int height, int first) {
     float x = (float)px / width, y = (float)py / height;
     if (y < 0.115f && x > 0.90f) { if (first) quit_now = 1; return; }
@@ -1661,6 +1677,11 @@ int main(int argc, char **argv) {
                 float dx = touch_now.p[0].x - touch_now.p[1].x;
                 float dy = touch_now.p[0].y - touch_now.p[1].y;
                 float d = sqrtf(dx * dx * aspect * aspect + dy * dy);
+                /* Der zweite Finger kommt selten im selben Bild wie der
+                   erste - und faellt zwischendurch auch mal fuer ein Bild
+                   aus.  Der Abstand beim Anfang wird deshalb nur einmal
+                   gemerkt, sonst faengt das Zoomen bei jedem Aussetzer von
+                   vorne an und bewegt sich nie. */
                 if (gesture != 3) { gesture = 3; pinch0 = d; chase0 = chase_m; }
                 else if (d > 0.01f && pinch0 > 0.01f) {
                     chase_m = chase0 * pinch0 / d;      /* auseinander = naeher dran */
@@ -1669,17 +1690,18 @@ int main(int argc, char **argv) {
                 }
             } else if (touch_now.n == 1) {
                 float x = touch_now.p[0].x, y = touch_now.p[0].y;
-                if (gesture == 0 || gesture == 3) {
+                if (gesture == 0) {
                     /* Wo der Finger aufsetzt, entscheidet: am Rand wischt er
-                       die App weg (das macht der Fenstermanager), auf der
-                       Bedienung wird bedient, sonst wird gedreht.  Im Menue
-                       ist alles Bedienung. */
+                       die App weg (das macht der Fenstermanager), auf einem
+                       Bedienteil wird bedient, sonst wird gedreht.  Im Menue
+                       ist alles Bedienung.  Aus dem Zoomen heraus wird nichts
+                       neu entschieden - erst wenn alle Finger weg sind. */
                     float ex = edge_px / (float)width, ey = edge_px / (float)height;
                     int on_edge = edge_px > 0 && (x < ex || x > 1.0f - ex
                                                   || y < ey || y > 1.0f - ey);
-                    int on_controls = (x < 0.17f) || (x > 0.83f) || (y > 0.84f) || (y < 0.14f);
                     if (on_edge) gesture = 4;
-                    else gesture = (screen_start || on_controls || view_mode != 2) ? 1 : 2;
+                    else gesture = (screen_start || on_widget(x, y) || view_mode != 2)
+                                   ? 1 : 2;
                 }
                 if (gesture == 1) {
                     /* Im Menue bedient derselbe Finger das Menue, nicht die
@@ -1926,6 +1948,12 @@ int main(int argc, char **argv) {
                    throttle, flaps, brake, gear_down ? "aus" : "ein",
                    fdm.v_ms * 1.94384f, fdm.alt_m * 3.28084f, fdm.vs_ms * 196.85f, fdm.rpm,
                    fdm.roll_deg, fdm.pitch_deg, fdm.on_ground ? "am Boden" : "in der Luft");
+            /* COCKPIT_DEBUG sagt, was die Finger gerade anrichten - ohne das
+               ist aus der Ferne nicht zu sehen, ob eine Geste ankommt. */
+            if (getenv("COCKPIT_DEBUG"))
+                printf("      Sicht %d  Geste %d  Finger %d  Kreisen %+6.1f/%+5.1f  "
+                       "Abstand %.0f m\n",
+                       view_mode, gesture, touch_now.n, orbit_az, orbit_el, chase_m);
             last = t;
             frames_at_last = frames;
         }

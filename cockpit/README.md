@@ -537,6 +537,42 @@ Bilder statt sechs.
 Triebwerke sind 31 892 — Fanschaufeln, die von außen niemand sieht). Wenn die
 Verfolgersicht damit einbricht, gehört eine Grenze in `acbake.py`.
 
+## Drehen und Zoomen in der Verfolgersicht (23.09.2026)
+
+Sebastian meldet, dass beides nicht geht. Mit einem **virtuellen
+Berührungsschirm** (`~/ps/meego-uitest/mtap.py`, Protokoll A wie der echte
+Atmel — geprüft an `/proc/bus/input/devices`: `ABS_MT_SLOT` fehlt, also
+Protokoll A) nachgestellt:
+
+    ziehen 426 240 -> 640 192   Geste 2, Kreisen +0,0/+14,0 -> -59,9/-2,0
+
+**Das Drehen selbst funktioniert also.** Was fehlte, war die Fläche: die
+Gestenentscheidung nahm einen groben Rahmen — die äußeren 17 Prozent ringsum
+galten als Bedienung. In der Verfolgersicht blieb damit nur die Bildmitte zum
+Drehen, und ein Finger, der irgendwo außen aufsetzt, zog stattdessen am
+Schubhebel oder am Seitenruder. Jetzt entscheidet `on_widget()` — **genau die
+Rechtecke, die auch gezeichnet werden** (Schub, Klappen, Fahrwerk, Bremse,
+Seitenruder, Ansicht, Anlasser, Kreuz). Alles andere dreht.
+
+**Und eine Schwäche beim Zoomen:** der zweite Finger kommt selten im selben
+Bild wie der erste und fällt zwischendurch für ein Bild aus. Aus der Geste
+„Zoomen“ wurde dann sofort wieder „Drehen“, und beim nächsten Bild mit zwei
+Fingern fing das Zoomen von vorne an — der Abstand wurde jedesmal neu
+gemerkt, also bewegte sich nichts. Jetzt bleibt die Geste, bis **alle** Finger
+weg sind.
+
+**Am Gerät nicht zu Ende geprüft:** beide Versuche mit dem virtuellen Schirm
+endeten vorzeitig, weil Sebastian gleichzeitig am Telefon war (einmal wurde
+das Fenster weggewischt, einmal pausierte die App im Hintergrund — beides
+genau so, wie es soll). Deshalb schreibt `fgfly-start.sh` die Ausgabe jetzt
+nach `/home/user/MyDocs/fgfly.log`, und `COCKPIT_DEBUG=1` hängt je Sekunde
+`Sicht / Geste / Finger / Kreisen / Abstand` an — damit lässt sich nach einem
+Flug nachsehen, was der Schirm gemeldet hat, statt jemandem den Bildschirm
+wegzunehmen.
+
+**Zur Erinnerung:** beide Gesten gelten nur in der **Verfolgersicht** (der
+Ansichtsknopf oben ist dann grün); in der Kanzelsicht dreht sich nichts.
+
 ## Was als Nächstes drangehört
 
 1. Ein feineres Bild für die Kachel unter einem (2048 statt 512).
