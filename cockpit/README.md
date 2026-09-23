@@ -750,6 +750,66 @@ mir gehabt, nur die Beschreibung aus dem APK
 HUD-Knopf oben links) und die übliche Form einer solchen Anzeige. Wenn es
 genauer sein soll, muss X-Plane einmal laufen und sein Bild danebenliegen.
 
+## Was in X-Plane wirklich drinsteht (23.09.2026)
+
+Statt zu raten, wie es dort aussieht: das APK liegt auf dem Baurechner
+(`X-Plane_9 v9.66.apk`), und darin steht alles.
+
+**Der Boden.** `assets/terrain.glsl`, 2,2 KB für den ganzen Simulator:
+
+    vcolor    = light_amb_rgb + light_dif_rgb * max(0, dot(N, light_pos))
+    fog_blend = clamp(dot(Vertex, fog_matrix), 0, 1)
+    OUTPUT(x) = mix(x, fog_color, fog_blend)
+
+Der Dunst ist also eine **Ebenengleichung auf dem Ort** (ein
+`dot` mit einem Vierervektor), nicht die Entfernung zur Kamera — damit geht
+auch Höhendunst. Unserer nimmt `clip.w`; das sieht gleich aus und kostet
+dasselbe. Die Beleuchtung ist Ambient + Diffus, genau wie unsere.
+
+Der eigentliche Unterschied ist die **Textur**: X-Plane legt je Geländeart
+(`apt, city, flat, flat_low, hill, rock1-4, sflat, steep, water`) eine sich
+wiederholende Textur unter die Kachel und blendet an den Grenzen mit einer
+zweiten Textur als Rampe:
+
+    #if BORDER
+      ramp_alpha = texture2D(tex_unit_1, TexCoord1).a;
+      OUTPUT(vec4(tex.xyz, 4.0 * (ramp_alpha - tex.a)))
+
+Wir haben nur **eine** Körnung (die schon erzeugt, aber nie benutzt wurde) —
+die liegt jetzt unter dem gebackenen Bild und wird mit dem Dunst wieder
+ausgeblendet. Die weichen Übergänge zwischen Geländearten wären der nächste
+Schritt.
+
+**Die grüne Anzeige.** `libxplane.so` hat sie als Code, nicht als Bild:
+`ip_pln_class::SIM_HUD_plot()` (0x14f66c, 9 KB) aus `SIM_render_3d_HUD.cpp`.
+Zerlegt mit `arm-none-eabi-objdump` und die Gleitkommazahlen aus dem
+Literalvorrat gelesen:
+
+    glColor4f(0.2*Helligkeit, Helligkeit, 0.0, 1.0)   <- die Farbe
+    glScissor(... 256 x 128 ...)                      <- die Leiter wird
+                                                         abgeschnitten
+    Konstanten: 10, 20 (Sprossen), +-31.82 Grad, 57.2958 (=180/pi),
+                -180/360/180 (Kurs), 100000/100/140 (Höhe, Bänder)
+
+Unsere Anzeige hat daraufhin **X-Planes Farbe** (Rot ein Fünftel, Blau gar
+nicht — vorher war Blau bei 0,35 dabei) und eine Leiter, die bei 30 Grad
+aufhört statt über das ganze Bild zu laufen.
+
+**Die Bedienung.** `assets/sim_alpha_fly_default.pvr` ist **kein** PVRTC,
+sondern RGBA4444 (Flagge 0x10) — also lesbar. Darin: `BRAKE`, `GEAR`, `FIRE`
+als weiße Schrift auf dunklen, abgerundeten Rechtecken, dazu Schieberbahn und
+Knopf, die Ansichtssymbole und `PAUSE (MENU)`.
+
+![X-Planes Bedienteile](xplane-bedienung.png)
+
+Daraufhin tragen unsere Knöpfe jetzt ihren Namen (`BREMSE`, `FAHRW`,
+`KANZEL/SICHT/AUSSEN`, `START`) in derselben Art: Schrift auf dunklem Grund,
+durchscheinend, und weg, sobald die Finger weg sind. Abgerundet sind sie
+nicht — dafür bräuchte es entweder eine Textur oder ein paar Dreiecke mehr je
+Knopf.
+
+![Die grüne Anzeige mit X-Planes Farbe](hud-gruen.png)
+
 ## Was als Nächstes drangehört
 
 1. Ein feineres Bild für die Kachel unter einem (2048 statt 512).

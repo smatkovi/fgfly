@@ -66,11 +66,18 @@ static const char *TERRAIN_FRAG =
     "uniform lowp vec3 u_col;\n"
     "uniform lowp vec3 u_haze;\n"
     "uniform sampler2D u_tex;\n"
+    "uniform sampler2D u_grain;\n"
     "varying lowp vec2 v_sh;\n"
     "varying mediump vec2 v_uv;\n"
     "varying mediump vec2 v_grain;\n"
     "void main() {\n"
     "  lowp vec3 c = u_col * texture2D(u_tex, v_uv).rgb * v_sh.x;\n"
+    /* X-Plane legt je Gelaendeart eine sich wiederholende Textur unter die
+       Kachel; wir haben nur eine Koernung, aber sie bricht die Flaeche auf -
+       aus der Naehe.  In der Ferne nimmt der Dunst sie wieder weg, sonst
+       flimmert es. */
+    "  lowp float g = texture2D(u_grain, v_grain).r;\n"
+    "  c *= mix(0.78 + 0.44 * g, 1.0, v_sh.y);\n"
     "  gl_FragColor = vec4(mix(c, u_haze, v_sh.y), 1.0);\n"
     "}\n";
 

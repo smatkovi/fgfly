@@ -427,11 +427,23 @@ static void build_frame(void) {
        Leiter fuer die Lage, Fahrt links, Hoehe rechts, sonst nichts.  Sie
        sitzt auf der Sicht nach vorn, also in Ansicht 1. */
     if (view_mode == 1) {
-        static const float hud[4] = {0.25f, 1.00f, 0.35f, 1.0f};
+        /* Die Farbe steht so in X-Planes eigenem Bild: der erste Aufruf in
+           `ip_pln_class::SIM_HUD_plot()` ist glColor4f(0.2*Helligkeit,
+           Helligkeit, 0.0, 1.0) - Rot ein Fuenftel, Blau gar nicht.  (Aus der
+           Zerlegung von libxplane.so mit arm-none-eabi-objdump.) */
+        static const float hud[4] = {0.20f, 1.00f, 0.00f, 1.0f};
         horizon_quad(-0.75f, -0.004f, 0.75f, 0.004f, roll, shift, hud);
-        for (int a = 5; a <= 20; a += 5) {
-            hud_rung((float)a, roll, shift, a % 10 ? 0.28f : 0.40f, hud);
-            hud_rung((float)-a, roll, shift, a % 10 ? 0.28f : 0.40f, hud);
+        /* X-Plane zeichnet die Leiter in einem abgeschnittenen Kasten
+           (glScissor, 256 x 128 in seinem Raster) - deshalb laeuft sie dort
+           nicht ueber das ganze Bild.  Wir schneiden beim Bauen ab: was
+           weiter als 30 Grad von der Nase weg liegt, kommt nicht hinein. */
+        for (int a = 5; a <= 30; a += 5) {
+            float pitch_up = fdm.pitch_deg + (float)a;
+            float pitch_dn = fdm.pitch_deg - (float)a;
+            if (pitch_up < 35.0f && pitch_up > -35.0f)
+                hud_rung((float)a, roll, shift, a % 10 ? 0.24f : 0.38f, hud);
+            if (pitch_dn < 35.0f && pitch_dn > -35.0f)
+                hud_rung((float)-a, roll, shift, a % 10 ? 0.24f : 0.38f, hud);
         }
         /* Fahrt links, Hoehe rechts, Steigen darunter - in Ziffern, wie im
            Blickfeld ueblich. */
@@ -489,17 +501,24 @@ static void build_frame(void) {
     rect_ui(0.90f, 0.15f, 0.06f, 0.70f, track);
     rect_ui(0.895f, 0.15f + (1.0f - flaps) * 0.66f, 0.07f, 0.04f, knob);
 
-    /* Fahrwerk links unter dem Schubhebel - wie bei X-Plane; gruen heisst
-       draussen und verriegelt.  Bremse rechts, Ansicht oben links. */
-    rect_ui(0.03f, 0.87f, 0.10f, 0.09f, gear_down ? green : dim);
-    rect_ui(0.755f, 0.885f, 0.11f, 0.09f, brake ? lit : dim);
-    rect_ui(0.14f, 0.03f, 0.13f, 0.08f,
+    /* Die Knoepfe tragen ihren Namen, wie bei X-Plane (dort stehen BRAKE,
+       GEAR und FIRE in weiss auf dunklem Grund - nachgesehen in seinem
+       Bildvorrat `sim_alpha_fly_default.pvr`).  Gruen heisst hier: das
+       Fahrwerk ist draussen, die Bremse ist an. */
+    rect_ui(0.03f, 0.87f, 0.15f, 0.09f, gear_down ? green : dim);
+    text_ui(0.045f, 0.892f, 0.045f, "FAHRW", gear_down ? black : white);
+    rect_ui(0.72f, 0.87f, 0.15f, 0.09f, brake ? lit : dim);
+    text_ui(0.737f, 0.892f, 0.045f, "BREMSE", white);
+    rect_ui(0.14f, 0.03f, 0.15f, 0.08f,
             view_mode == 0 ? dim : (view_mode == 1 ? knob : green));
+    text_ui(0.155f, 0.048f, 0.045f,
+            view_mode == 0 ? "KANZEL" : (view_mode == 1 ? "SICHT" : "AUSSEN"),
+            view_mode == 1 ? black : white);
 
     /* Der Anlasser.  Steht der Motor, leuchtet er gruen und heisst START;
        laeuft er, ist er dunkel und heisst STOP. */
-    rect_ui(0.30f, 0.03f, 0.13f, 0.08f, fdm.engine_on ? dim : green);
-    text_ui(0.315f, 0.048f, 0.048f, fdm.engine_on ? "STOP" : "START",
+    rect_ui(0.31f, 0.03f, 0.13f, 0.08f, fdm.engine_on ? dim : green);
+    text_ui(0.325f, 0.048f, 0.045f, fdm.engine_on ? "STOP" : "START",
             fdm.engine_on ? white : black);
 
     /* Seitenruder: waagrecht unten, federt in die Mitte zurueck.  Am Boden
@@ -1422,12 +1441,12 @@ static void start_flight(void) {
    Bedienung - in der Verfolgersicht blieb zum Drehen nur die Bildmitte. */
 static int on_widget(float x, float y) {
     if (y < 0.115f && x > 0.90f) return 1;                  /* das Kreuz */
-    if (y < 0.13f && x > 0.12f && x < 0.29f) return 1;      /* Ansicht */
-    if (y < 0.13f && x > 0.29f && x < 0.45f) return 1;      /* Anlasser */
+    if (y < 0.13f && x > 0.12f && x < 0.30f) return 1;      /* Ansicht */
+    if (y < 0.13f && x > 0.30f && x < 0.46f) return 1;      /* Anlasser */
     if (x < 0.16f && y > 0.13f && y < 0.87f) return 1;      /* Schubhebel */
     if (x > 0.84f && y > 0.13f && y < 0.87f) return 1;      /* Klappen */
-    if (y > 0.85f && x < 0.15f) return 1;                   /* Fahrwerk */
-    if (y > 0.87f && x > 0.74f && x < 0.88f) return 1;      /* Bremse */
+    if (y > 0.85f && x < 0.20f) return 1;                   /* Fahrwerk */
+    if (y > 0.85f && x > 0.70f && x < 0.89f) return 1;      /* Bremse */
     if (y > 0.90f && x > 0.20f && x < 0.64f) return 1;      /* Seitenruder */
     return 0;
 }
@@ -1441,14 +1460,14 @@ static void touch(int px, int py, int width, int height, int first) {
         if (rudder > 1.0f) rudder = 1.0f;
         return;
     }
-    if (y > 0.85f && x < 0.15f) { if (first) gear_down = !gear_down; return; }
+    if (y > 0.85f && x < 0.20f) { if (first) gear_down = !gear_down; return; }
     if (x < 0.16f) throttle = 1.0f - (y - 0.15f) / 0.70f;
     else if (x > 0.84f) flaps = 1.0f - (y - 0.15f) / 0.70f;
-    else if (y > 0.87f && x > 0.74f && x < 0.88f) { if (first) brake = !brake; }
-    else if (y < 0.13f && x > 0.12f && x < 0.29f) {
+    else if (y > 0.85f && x > 0.70f && x < 0.89f) { if (first) brake = !brake; }
+    else if (y < 0.13f && x > 0.12f && x < 0.30f) {
         if (first) view_mode = (view_mode + 1) % 3;
     }
-    else if (y < 0.13f && x > 0.29f && x < 0.45f) {
+    else if (y < 0.13f && x > 0.30f && x < 0.46f) {
         if (first) fdm.engine_on = !fdm.engine_on;
     }
     if (throttle < 0.0f) throttle = 0.0f;
