@@ -272,3 +272,24 @@ Das trifft genau die teuren Posten der Jolla-Messung: Bäume waren dort rund
 Wolken weitere 5 %. Und es nimmt den drei Programmen, die auf der SGX530
 voraussichtlich nicht binden, ihre Aufgabe — sie zeichnen Gelände mit
 Materialmischung, die es nach dem Backen nicht mehr gibt.
+
+## Weiche Übergänge (23.09.2026)
+
+X-Plane blendet zwischen zwei Geländearten mit einer zweiten Textur als Rampe
+(`#if BORDER` in seinem `terrain.glsl`: `4.0 * (ramp_alpha - tex.a)`) —
+deshalb hört dort kein Feld an einer geraden Linie auf. Wir haben statt
+Einzeltexturen **ein** gebackenes Bild je Kachel, also machen wir die Grenzen
+**im Bild** weich:
+
+1. erst die Landbedeckung malen (Wald, Feld, Wiese, Ort),
+2. **zweimal einen gewichteten 3×3-Kasten darüber** — bei 36 m je Bildpunkt
+   ist das ein Saum von gut hundert Metern,
+3. **dann erst** die Bänder: Straßen, Bahnen, Bäche, Flugplatzbeläge. Die
+   bleiben scharf, denn ein Fluss hört sehr wohl an einer Linie auf.
+
+Was ein Band ist, entscheidet `is_band()` am Materialnamen (`Road`, `Freeway`,
+`Railroad`, `Stream`, `Canal`, `pa_`, `pc_`, `lf_`, `rwy`, …).
+
+`fgfly-rebake.sh` backt alles noch einmal, was schon geholt ist — der Holer
+selbst überspringt, was daliegt, und nach einer Änderung am Backofen muss man
+eben alles neu machen. Auf der N950 sind das ein paar Minuten.

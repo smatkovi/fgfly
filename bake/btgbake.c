@@ -565,6 +565,54 @@ static uint16_t rgb565(const unsigned char c[3]) {
 }
 
 /* Ein Dreieck fuellen - Kantenfunktionen, ganzzahlig genug fuer 512 Punkte. */
+/* Was ist ein Band?  Strassen, Bahnen, Baeche und Ortsgrenzen sind als
+   schmale Streifen in die Triangulierung geschnitten - die sollen scharf
+   bleiben.  Die Landbedeckung darunter darf ineinander laufen. */
+static int is_band(const char *name) {
+    static const char *const band[] = {
+        "Road", "Freeway", "Railroad", "Stream", "Canal", "River", "Watercourse",
+        "Airport", "pa_", "pc_", "lf_", "rwy", "taxiway", "Asphalt"
+    };
+    for (size_t i = 0; i < sizeof(band) / sizeof(band[0]); ++i)
+        if (strstr(name, band[i])) return 1;
+    return 0;
+}
+
+/* Die Uebergaenge weich machen - das ist der eine Kniff, mit dem X-Planes
+   Boden besser aussieht als unserer: dort blendet eine zweite Textur als
+   Rampe zwischen zwei Gelaendearten (`#if BORDER` in terrain.glsl).  Wir
+   haben nur ein gebackenes Bild, also verwischen wir die Grenzen darin - aber
+   **nur die der Landbedeckung**, bevor Strassen und Baeche darueberkommen.
+   Ein gewichteter 3x3-Kasten, zweimal: das reicht bei 36 m je Bildpunkt fuer
+   einen Saum von gut hundert Metern. */
+static void soften(uint16_t *img, int size, int passes) {
+    uint16_t *tmp = xrealloc(NULL, (size_t)size * size * 2);
+    for (int pass = 0; pass < passes; ++pass) {
+        memcpy(tmp, img, (size_t)size * size * 2);
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                int r = 0, g = 0, b = 0, n = 0;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    int yy = y + dy;
+                    if (yy < 0 || yy >= size) continue;
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        int xx = x + dx;
+                        if (xx < 0 || xx >= size) continue;
+                        int w = (dx == 0 && dy == 0) ? 4 : 1;
+                        uint16_t v = tmp[yy * size + xx];
+                        r += ((v >> 11) & 0x1F) * w;
+                        g += ((v >> 5) & 0x3F) * w;
+                        b += (v & 0x1F) * w;
+                        n += w;
+                    }
+                }
+                img[y * size + x] = (uint16_t)(((r / n) << 11) | ((g / n) << 5) | (b / n));
+            }
+        }
+    }
+    free(tmp);
+}
+
 static void fill_triangle(uint16_t *img, int size, const float *x, const float *y, uint16_t colour) {
     float minx = x[0], maxx = x[0], miny = y[0], maxy = y[0];
     for (int i = 1; i < 3; ++i) {
@@ -649,20 +697,26 @@ static int write_texture(const char *path, const struct tile *t, const struct ba
     for (int i = 0; i < size * size; ++i) img[i] = fill;
 
     /* Von hinten nach vorn: die Landbedeckung steht in der Datei hinter den
-       Baendern, also muss sie zuerst - dann liegen Strassen obenauf. */
-    for (int g = t->ngroups - 1; g >= 0; --g) {
-        unsigned char rgb[3];
-        palette_lookup(pal, npal, t->group[g].material, rgb);
-        uint16_t colour = rgb565(rgb);
-        for (uint32_t i = start[g]; i + 2 < start[g] + count[g]; i += 3) {
-            float px[3], py[3];
-            for (int k = 0; k < 3; ++k) {
-                uint32_t v = b->index[i + k];
-                px[k] = (lx[v] - minx) / span * (size - 1);
-                py[k] = (size - 1) - (ly[v] - miny) / span * (size - 1);
+       Baendern, also muss sie zuerst - dann liegen Strassen obenauf.  Und
+       dazwischen werden die Grenzen der Landbedeckung weich gemacht: ein Feld
+       hoert nicht an einer geraden Linie auf, ein Fluss schon. */
+    for (int runde = 0; runde < 2; ++runde) {
+        for (int g = t->ngroups - 1; g >= 0; --g) {
+            if (is_band(t->group[g].material) != runde) continue;
+            unsigned char rgb[3];
+            palette_lookup(pal, npal, t->group[g].material, rgb);
+            uint16_t colour = rgb565(rgb);
+            for (uint32_t i = start[g]; i + 2 < start[g] + count[g]; i += 3) {
+                float px[3], py[3];
+                for (int k = 0; k < 3; ++k) {
+                    uint32_t v = b->index[i + k];
+                    px[k] = (lx[v] - minx) / span * (size - 1);
+                    py[k] = (size - 1) - (ly[v] - miny) / span * (size - 1);
+                }
+                fill_triangle(img, size, px, py, colour);
             }
-            fill_triangle(img, size, px, py, colour);
         }
+        if (runde == 0) soften(img, size, 2);
     }
 
     FILE *f = fopen(path, "wb");

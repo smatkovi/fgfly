@@ -30,8 +30,12 @@ done
 # vergessen wurde.  Also nachsehen, ob eine Quelle juenger ist als das
 # Programm - und dann nicht packen.
 alt=""
-for q in $(find "$ROOT/cockpit" "$ROOT/bake" \( -name '*.c' -o -name '*.h' \) -print); do
+for q in $(find "$ROOT/cockpit" \( -name '*.c' -o -name '*.h' \) -print); do
     if [ "$q" -nt "$ROOT/cockpit/build/cockpit" ]; then alt="$alt
+$q"; fi
+done
+for q in $(find "$ROOT/bake" \( -name '*.c' -o -name '*.h' \) -print); do
+    if [ "$q" -nt "$ROOT/bake/build/btgbake" ]; then alt="$alt
 $q"; fi
 done
 if [ -n "$alt" ]; then
@@ -41,7 +45,7 @@ if [ -n "$alt" ]; then
     exit 1
 fi
 cp "$HERE/fgfly-start.sh" "$HERE/fgfly-fetch.sh" "$HERE/fgfly-aircraft.sh" \
-   "$STAGE/opt/fgfly/bin/"
+   "$HERE/fgfly-rebake.sh" "$STAGE/opt/fgfly/bin/"
 cp "$ROOT/bake/acbake.py" "$ROOT/bake/matcolors.py" "$ROOT/cockpit/acftconv.py" \
    "$STAGE/opt/fgfly/bin/"
 cp "$HOME/fgfs-work/fgfs-scenery" "$STAGE/opt/fgfly/bin/" 2>/dev/null || true
