@@ -777,8 +777,12 @@ zweiten Textur als Rampe:
 
 Wir haben nur **eine** Körnung (die schon erzeugt, aber nie benutzt wurde) —
 die liegt jetzt unter dem gebackenen Bild und wird mit dem Dunst wieder
-ausgeblendet. Die weichen Übergänge zwischen Geländearten wären der nächste
-Schritt.
+ausgeblendet. Und die weichen Übergänge sind seit 0.4.1 auch da, nur an
+anderer Stelle: nicht im Shader, sondern **im gebackenen Bild** (siehe
+`../bake/README.md`) — erst die Landbedeckung malen, zweimal weichzeichnen,
+dann erst Straßen, Bäche und Bahnen darüber, die scharf bleiben.
+
+![Der Boden mit weichen Uebergaengen](boden-weich.png)
 
 **Die grüne Anzeige.** `libxplane.so` hat sie als Code, nicht als Bild:
 `ip_pln_class::SIM_HUD_plot()` (0x14f66c, 9 KB) aus `SIM_render_3d_HUD.cpp`.
