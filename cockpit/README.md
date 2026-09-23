@@ -712,9 +712,12 @@ abgelesen). Die Versatzwerte aus der XML brauchen deshalb ein Minus — vorher
 saßen linke und rechte Teile vertauscht, was bei symmetrischen Flugzeugen
 niemandem auffällt.
 
-**Noch nicht am Gerät gesehen:** die N950 war beim Prüfen aus dem Netz
-verschwunden. `COCKPIT_FLAPS=1` setzt die Klappen beim Start, damit man es
-ohne Finger sieht.
+**Am Gerät nachgesehen** (`a320-klappen.png`, aus dem Bildspeicher der N950):
+der A320 steht mit den Rädern auf dem Boden statt darin, und die Klappen
+stehen ausgefahren hinter den Flächen. `COCKPIT_FLAPS=1` setzt sie beim Start,
+damit man es ohne Finger sieht.
+
+![A320 mit ausgefahrenen Klappen](a320-klappen.png)
 
 ## Was als Nächstes drangehört
 
