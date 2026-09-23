@@ -24,6 +24,22 @@ for f in "$ROOT/cockpit/build/cockpit" "$ROOT/bake/build/btgbake"; do
     [ -f "$f" ] || { echo "fehlt: $f - erst build-n9.sh laufen lassen" >&2; exit 1; }
     cp "$f" "$STAGE/opt/fgfly/bin/"
 done
+
+# Einmal ist genau das passiert: das Paket trug ein Programm von vor drei
+# Aenderungen, weil der Bau auf dem Baurechner lief und nur das Ergebnis
+# vergessen wurde.  Also nachsehen, ob eine Quelle juenger ist als das
+# Programm - und dann nicht packen.
+alt=""
+for q in $(find "$ROOT/cockpit" "$ROOT/bake" \( -name '*.c' -o -name '*.h' \) -print); do
+    if [ "$q" -nt "$ROOT/cockpit/build/cockpit" ]; then alt="$alt
+$q"; fi
+done
+if [ -n "$alt" ]; then
+    echo "Quellen sind juenger als cockpit/build/cockpit:" >&2
+    echo "$alt" | sed 's/^/  /' >&2
+    echo "erst build-n9.sh laufen lassen und das Ergebnis herholen" >&2
+    exit 1
+fi
 cp "$HERE/fgfly-start.sh" "$HERE/fgfly-fetch.sh" "$HERE/fgfly-aircraft.sh" \
    "$STAGE/opt/fgfly/bin/"
 cp "$ROOT/bake/acbake.py" "$ROOT/bake/matcolors.py" "$ROOT/cockpit/acftconv.py" \

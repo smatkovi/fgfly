@@ -43,3 +43,21 @@ Das 64er Icon geht zusätzlich base64 als `Maemo-Icon-26` ins control, damit es
 auch der Paketmanager zeigt.
 
 `startseite.png` zeigt es zwischen den anderen Apps.
+
+## Eine Falle, die einen ganzen Umweg gekostet hat (23.09.2026)
+
+Gebaut wird auf dem Baurechner, gepackt wird hier — und dazwischen muss das
+Programm **abgeholt** werden. Einmal ist genau das ausgeblieben: das Paket
+0.3.5 trug ein `cockpit` von drei Änderungen vorher, also ohne die Finger
+über X, und am Gerät änderte sich nichts, obwohl „neu installiert“ dastand.
+
+`build-deb.sh` prüft deshalb jetzt, ob eine Quelle jünger ist als
+`cockpit/build/cockpit`, und packt dann nicht:
+
+    Quellen sind juenger als cockpit/build/cockpit:
+      /home/.../cockpit/xtouch.c
+    erst build-n9.sh laufen lassen und das Ergebnis herholen
+
+Zum Gegenprüfen, was wirklich im Paket liegt:
+
+    python3 packaging/mkdeb.py --info build/fgfly_0.3.6_armel.deb
