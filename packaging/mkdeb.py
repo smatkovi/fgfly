@@ -211,6 +211,13 @@ def main(argv):
         if os.path.isfile(p):
             with open(p, "rb") as fh:
                 ctl_entries.append((extra, False, 0o755, fh.read()))
+    # Harmattans Aegis liest `_aegis` aus dem Steuerteil: dort steht, welche
+    # Rechte ein Programm des Pakets bekommen soll (bei uns die Gruppe
+    # `input`, sonst kommt vom Startbildschirm aus kein Finger an).
+    p = os.path.join(root, "DEBIAN", "_aegis")
+    if os.path.isfile(p):
+        with open(p, "rb") as fh:
+            ctl_entries.append(("_aegis", False, 0o644, fh.read()))
     ctl_entries.sort(key=lambda e: e[0])
     ctl_tgz = tar_gz(ctl_entries)
 

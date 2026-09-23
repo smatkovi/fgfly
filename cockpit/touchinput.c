@@ -1,5 +1,6 @@
 #include "touchinput.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <stdio.h>
@@ -40,6 +41,7 @@ static struct { int x, y; } frame[SLOTS];
 static int frame_n, frame_ready, frame_count;
 
 int touch_open(void) {
+    const char *why = NULL;
     /* COCKPIT_TOUCH zeigt auf ein bestimmtes Geraet - damit laesst sich die
        Bedienung ueber ssh pruefen: ein zweiter, virtueller Schirm aus
        ~/ps/meego-uitest/mtap.py statt der Finger. */
@@ -54,7 +56,10 @@ int touch_open(void) {
             snprintf(path, sizeof(path), "/dev/input/event%d", i);
         }
         int fd = open(path, O_RDONLY | O_NONBLOCK);
-        if (fd < 0) continue;
+        if (fd < 0) {
+            if (errno == EACCES && !why) why = "keine Berechtigung, Gruppe input fehlt";
+            continue;
+        }
         char name[128] = "";
         ioctl(fd, EVIOCGNAME(sizeof(name)), name);
         struct input_absinfo abs;
@@ -72,7 +77,11 @@ int touch_open(void) {
         }
         close(fd);
     }
-    printf("kein Beruehrungsschirm gefunden - X-Zeiger wird benutzt\n");
+    /* Warum nicht?  Fast immer, weil der Starter des Startbildschirms die
+       Gruppe `input` nicht weitergibt - dann sagt das Oeffnen "Keine
+       Berechtigung", und im Protokoll steht sonst nur ein Raetsel. */
+    printf("kein Beruehrungsschirm gefunden (%s) - X-Zeiger wird benutzt\n",
+           why ? why : "kein Geraet mit Mehrfingerachsen");
     return -1;
 }
 

@@ -11,9 +11,12 @@ CC=$XGCC/bin/arm-none-linux-gnueabi-gcc
 
 [ -x "$CC" ] || { echo "cross compiler missing: $CC" >&2; exit 1; }
 mkdir -p "$OUT"
+# libXi liegt im Sysroot ohne den ueblichen Symlink, deshalb der volle Pfad -
+# die Finger kommen ueber die Eingabeerweiterung von X (xtouch.c).
 "$CC" --sysroot="$SYSROOT" -O2 -Wall -std=gnu99 \
-    -o "$OUT/cockpit" "$HERE/cockpit.c" "$HERE/fdm.c" "$HERE/terrain.c" "$HERE/touchinput.c" \
+    -o "$OUT/cockpit" "$HERE/cockpit.c" "$HERE/fdm.c" "$HERE/terrain.c" \
+    "$HERE/touchinput.c" "$HERE/xtouch.c" \
     -static-libgcc -Wl,--as-needed -Wl,--dynamic-linker=/lib/ld-linux.so.3 \
-    -lEGL -lGLESv2 -lX11 -lm
+    -lEGL -lGLESv2 -lX11 "$SYSROOT/usr/lib/libXi.so.6" -lm
 "$XGCC/bin/arm-none-linux-gnueabi-strip" "$OUT/cockpit"
 ls -la "$OUT/cockpit"

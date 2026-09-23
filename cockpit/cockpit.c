@@ -28,6 +28,7 @@
 #include "fdm.h"
 #include "terrain.h"
 #include "touchinput.h"
+#include "xtouch.h"
 
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -1539,6 +1540,10 @@ int main(int argc, char **argv) {
     XMapRaised(xdpy, win);
     XFlush(xdpy);
 
+    /* Erst X fragen: von dort kommen die Finger auch dann, wenn die App vom
+       Startbildschirm gestartet wurde und die Gruppe `input` nicht hat. */
+    int use_xtouch = xtouch_open(xdpy, win);
+
     EGLSurface surf = eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)win, NULL);
     if (surf == EGL_NO_SURFACE) {
         fprintf(stderr, "eglCreateWindowSurface: %#x\n", eglGetError());
@@ -1588,7 +1593,9 @@ int main(int argc, char **argv) {
     int no_sensor = getenv("COCKPIT_NOSENSOR") != NULL;
     int demo = getenv("COCKPIT_DEMO") != NULL;
     int dragging = 0;
-    int touch_fd = touch_open();
+    /* Das Geraet selbst ist nur noch der Rueckfall - aus einer Shell heraus
+       (dort hat der Benutzer die Gruppe) oder mit COCKPIT_TOUCH zum Pruefen. */
+    int touch_fd = (use_xtouch && !getenv("COCKPIT_TOUCH")) ? -1 : touch_open();
     /* COCKPIT_XTOUCH laesst zusaetzlich den X-Zeiger gelten - damit kann man
        die Oberflaeche ueber ssh mit tap.py bedienen. */
     int x_touch = getenv("COCKPIT_XTOUCH") != NULL;
@@ -1600,6 +1607,9 @@ int main(int argc, char **argv) {
     int app_active = 1;                 /* 0, sobald der Randwisch uns wegwischt */
     int had_focus = 0;                  /* erst wenn wir den Fokus einmal hatten,
                                            heisst sein Verlust auch Hintergrund */
+    /* Beim Pruefen ueber ssh liegt das Fenster hinter dem, was der Nutzer
+       gerade offen hat - dann pausiert die App und man misst nichts. */
+    int never_pause = getenv("COCKPIT_NOPAUSE") != NULL;
     /* Der Randwisch faengt am Bildschirmrand an.  Wir lesen den Schirm direkt
        und sehen denselben Finger; was am Rand aufsetzt, ruehren wir nicht an,
        sonst zieht das Wegwischen nebenher den Schubhebel.  COCKPIT_EDGE=0
@@ -1668,8 +1678,9 @@ int main(int argc, char **argv) {
     }
 
     for (;;) {
-        if (touch_fd >= 0) {
-            touch_read(touch_fd, &touch_now);
+        if (touch_fd >= 0 || use_xtouch) {
+            if (touch_fd >= 0) touch_read(touch_fd, &touch_now);
+            /* bei X traegt xtouch_event() den Stand ein, gleich unten */
             /* Der Schirm meldet weiter, auch wenn wir weggewischt sind - die
                Finger auf dem Startbildschirm sind dann nicht unsere. */
             if (!app_active) memset(&touch_now, 0, sizeof(touch_now));
@@ -1725,9 +1736,14 @@ int main(int argc, char **argv) {
         while (XPending(xdpy)) {
             XEvent ev;
             XNextEvent(xdpy, &ev);
-            if (touch_fd >= 0 && !x_touch && (ev.type == ButtonPress || ev.type == ButtonRelease
-                                              || ev.type == MotionNotify))
-                continue;               /* der Schirm wird direkt gelesen */
+            if (xtouch_is_event(&ev)) {
+                xtouch_event(xdpy, &ev, &touch_now);
+                continue;
+            }
+            if ((touch_fd >= 0 || use_xtouch) && !x_touch
+                && (ev.type == ButtonPress || ev.type == ButtonRelease
+                    || ev.type == MotionNotify))
+                continue;               /* die Finger kommen vom Schirm, nicht vom Zeiger */
             if (ev.type == ButtonPress) {
                 if (screen_start)
                     touch_start((float)ev.xbutton.x / width, (float)ev.xbutton.y / height);
@@ -1773,6 +1789,7 @@ int main(int argc, char **argv) {
             else if (ev.type == FocusOut && ev.xfocus.mode == NotifyNormal && had_focus)
                 app_active = 0;
         }
+        if (!app_active && never_pause) app_active = 1;
         if (!app_active) {
             gesture = 0;
             dragging = 0;

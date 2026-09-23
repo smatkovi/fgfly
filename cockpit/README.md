@@ -573,6 +573,58 @@ wegzunehmen.
 **Zur Erinnerung:** beide Gesten gelten nur in der **Verfolgersicht** (der
 Ansichtsknopf oben ist dann grün); in der Kanzelsicht dreht sich nichts.
 
+## Die Finger kommen von X, nicht aus /dev/input (23.09.2026)
+
+Sebastian: „weder Zoom noch Drehen geht“ — und im Protokoll stand, warum:
+
+    kein Beruehrungsschirm gefunden - X-Zeiger wird benutzt
+
+**Vom Startbildschirm gestartet darf die App den Berührungsschirm gar nicht
+öffnen.** `/dev/input/event1` gehört `root:input`, und der Starter gibt die
+Gruppe nicht weiter: `meegotouchhome` läuft mit den Gruppen 9990003 9990130
+9990470, `applauncherd` mit dreißig anderen — **`input` (30002) ist in keiner
+davon**. Aus einer Shell heraus hat der Benutzer sie, deshalb ging bei jedem
+Test über ssh alles und am Gerät nichts.
+
+Was nicht hilft: das setgid-Bit (Aegis räumt es beim Ausführen weg), eine
+Aegis-Rechteanforderung im Paket (`_aegis` mit `GRP::input` — wird für ein
+unsigniertes Paket nicht gewährt, der Eintrag in `restok.conf` bleibt leer)
+und `aegis-exec -a GRP::input` (darf nur vergeben, was der Aufrufer hat).
+
+**Sebastians Einwand „das dürfen doch andere Apps auch“ war der Hinweis.**
+`xiprobe.c` fragt X, und die Antwort ist eindeutig:
+
+    XInputExtension: opcode 136, XI 2.0
+    [2] Virtual core pointer, 31 Klassen
+        Achse  0: Abs MT Position X   0..853     Achse  5: Abs MT Position X
+        Achse  1: Abs MT Position Y   0..479     Achse  6: Abs MT Position Y
+        Achse  2: Abs MT Touch Major              ...
+        Achse  3: Abs MT Touch Minor
+        Achse  4: Abs MT Tracking ID  0..5       (sechs Finger, je fünf Achsen)
+
+Harmattan reicht **sechs Berührungen als Achsen der Eingabeerweiterung**
+durch — genau so kommen die anderen Apps an zwei Finger. `xtouch.c` holt sie
+jetzt von dort (XI 2.0, `XISelectEvents` auf unser Fenster, aus jedem Ereignis
+die geänderten Achsen; die übrigen merken wir uns). `/dev/input` ist nur noch
+der Rückfall für `COCKPIT_TOUCH` und den Start aus einer Shell.
+
+**Ohne die Gruppe `input` nachgemessen** (Prozess mit leerer Gruppenliste, so
+wie der Starter es tut):
+
+    Beruehrungen von X: 2 Finger, Geraet 2, XI 2.0
+    ziehen  -> Geste 2, Finger 1, Kreisen  -31,8/-10,4 ... -94,3/+17,7
+    zwei    -> Geste 3, Finger 2, Abstand  22 -> 11 -> 8 m ... 400 m
+
+Zwei Fallen dabei: die Achsen eines Fingers, der längst weg ist, stehen noch
+im Zwischenspeicher — beim Aufsetzen werden sie deshalb vergessen, sonst liegt
+„schon ein zweiter Finger“ da und aus jedem Ziehen wird ein Zoomen. Und ein
+zweiter Finger zählt nur mit eigener Kennung (`Tracking ID`); der erste auch
+ohne, damit eine Maus weiter funktioniert.
+
+`COCKPIT_NOPAUSE=1` schaltet beim Prüfen die Hintergrundpause ab — sonst
+schläft die App, sobald sie hinter dem liegt, was der Nutzer gerade offen hat,
+und man misst null Bilder.
+
 ## Was als Nächstes drangehört
 
 1. Ein feineres Bild für die Kachel unter einem (2048 statt 512).
