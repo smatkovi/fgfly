@@ -28,6 +28,7 @@ struct fdm_aircraft {
     float wing_span_m;
     float thrust_max_n;
     float rpm_idle, rpm_max;
+    int jet;                    /* Turbine: der Schub faellt nicht mit der Fahrt */
     float cd0;
     float cd_gear;          /* was das ausgefahrene Fahrwerk kostet */
     struct fdm_table cl_alpha;   /* Anstellwinkel in Grad -> Auftriebsbeiwert */

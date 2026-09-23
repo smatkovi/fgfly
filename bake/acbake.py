@@ -353,6 +353,14 @@ def write_bundle(path, groups):
     return len(vertices), len(indices), ranges
 
 
+def pow2_at_most(value, cap):
+    """Die groesste Zweierpotenz, die nicht groesser ist als value und cap."""
+    n = 1
+    while n * 2 <= value and n * 2 <= cap:
+        n *= 2
+    return n
+
+
 def find_texture(name, folders, pkg_dir, cache={}):
     """Die Bilddatei zu einem Texturnamen.  Erst dort, wo die `.ac` liegt,
     dann daneben - und wenn das nichts gibt, im ganzen Paket suchen: die
@@ -390,7 +398,7 @@ def write_textures(folders, pkg_dir, out_path, ranges):
         w, h, rgb = pixels
         # 2048er Texturen sind je 8 MB in RGB565; auf dem Geraet ist das zu
         # viel fuer ein Flugzeug, und 1024 sieht aus dieser Entfernung gleich aus.
-        while w > 1024 or h > 1024:
+        while w > 2048 or h > 2048:
             w2, h2 = w // 2, h // 2
             small = bytearray(w2 * h2 * 3)
             for y in range(h2):
@@ -403,11 +411,31 @@ def write_textures(folders, pkg_dir, out_path, ranges):
                     for k in range(3):
                         small[o + k] = (rgb[a + k] + rgb[b + k] + rgb[c + k] + rgb[d + k]) // 4
             rgb, w, h = small, w2, h2
+        # **Zweierpotenz, sonst bleibt die Flaeche schwarz.** OpenGL ES 2.0
+        # erklaert eine Textur, deren Kanten keine Zweierpotenz sind, mit
+        # Verkleinerungsstufen und GL_REPEAT fuer unvollstaendig - und
+        # unvollstaendig heisst: schwarz.  Die Fluegel des A320 haben
+        # 2133 x 2133 Bildpunkte.
+        tw, th = pow2_at_most(w, 1024), pow2_at_most(h, 1024)
+        if (tw, th) != (w, h):
+            scaled = bytearray(tw * th * 3)
+            for y in range(th):
+                sy = y * h // th
+                for x in range(tw):
+                    sx = x * w // tw
+                    o = (y * tw + x) * 3
+                    i0 = (sy * w + sx) * 3
+                    scaled[o:o + 3] = rgb[i0:i0 + 3]
+            rgb, w, h = scaled, tw, th
         with open("%s.%s.tex" % (stem, os.path.splitext(name)[0]), "wb") as f:
             f.write(b"FGT1")
             f.write(struct.pack("<III", w, h, 0))
             f.write(struct.pack("<fff", 0.0, 0.0, 1.0))
-            for y in range(h):
+            # **Von unten nach oben schreiben.** In der `.ac`-Datei liegt der
+            # Nullpunkt der Texturkoordinate unten links, und genauso liest GL
+            # die Bildpunkte - ein PNG faengt aber oben an.  Ohne das Umdrehen
+            # steht jede Beschriftung auf dem Kopf.
+            for y in range(h - 1, -1, -1):
                 row = bytearray()
                 for x in range(w):
                     i = (y * w + x) * 3

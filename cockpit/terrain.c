@@ -151,13 +151,23 @@ static void load_texture_file(struct terrain *t, const char *tex_path, const dou
     glBindTexture(GL_TEXTURE_2D, t->tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, (GLsizei)w, (GLsizei)h, 0, GL_RGB,
                  GL_UNSIGNED_SHORT_5_6_5, px);
-    /* Ohne Verkleinerungsstufen wird der Boden im flachen Blick zu Brei:
-       ein Bildpunkt deckt dort Dutzende Bildpunkte der Textur ab. */
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    /* **Nur Zweierpotenzen duerfen Stufen und GL_REPEAT haben.** Eine Textur
+       mit krummen Kanten gilt in ES 2.0 sonst als unvollstaendig, und
+       unvollstaendig heisst schwarz - so waren die Tragflaechen des A320
+       (2133 x 2133 im Hangar) schwarz. */
+    int pot = w && h && (w & (w - 1)) == 0 && (h & (h - 1)) == 0;
+    if (pot) {
+        /* Ohne Verkleinerungsstufen wird der Boden im flachen Blick zu Brei:
+           ein Bildpunkt deckt dort Dutzende Bildpunkte der Textur ab. */
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    } else {
+        printf("  %ux%u ist keine Zweierpotenz - ohne Stufen, festgeklemmt\n", w, h);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, pot ? GL_REPEAT : GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, pot ? GL_REPEAT : GL_CLAMP_TO_EDGE);
     free(px);
 
     /* Das Bild ist im System der Kachel gemalt, gezeichnet wird im System der
@@ -331,6 +341,39 @@ int terrain_load(struct terrain *t, const char *path, struct terrain_frame *fram
             if (dx * dx + dy * dy < 200.0f * 200.0f && p[2] > top) top = p[2];
         }
         t->centre_height = top > -1e29f ? top : 0.0f;
+
+        /* Dasselbe fuer die ganze Kachel, nur grob: ein Raster aus 64 x 64
+           Zellen, in jeder der hoechste Eckpunkt.  Das sind bei einer Kachel
+           von 12 km rund 190 m je Zelle und 16 KB Speicher - genug, damit das
+           Flugzeug dem Gelaende folgt und an einem Berg aufsetzt. */
+        if (!t->is_model && nv > 0) {
+            float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+            for (unsigned int i = 0; i < nv; ++i) {
+                const float *p = (const float *)(gpu + (size_t)i * vstride);
+                if (p[0] < x0) x0 = p[0];
+                if (p[0] > x1) x1 = p[0];
+                if (p[1] < y0) y0 = p[1];
+                if (p[1] > y1) y1 = p[1];
+            }
+            int n = 64;
+            float span = (x1 - x0) > (y1 - y0) ? (x1 - x0) : (y1 - y0);
+            if (span < 1.0f) span = 1.0f;
+            t->grid = malloc((size_t)n * n * sizeof(float));
+            if (t->grid) {
+                t->grid_n = n;
+                t->grid_x0 = x0;
+                t->grid_y0 = y0;
+                t->grid_cell = span / n;
+                for (int i = 0; i < n * n; ++i) t->grid[i] = -1e30f;
+                for (unsigned int i = 0; i < nv; ++i) {
+                    const float *p = (const float *)(gpu + (size_t)i * vstride);
+                    int cx = (int)((p[0] - x0) / t->grid_cell);
+                    int cy = (int)((p[1] - y0) / t->grid_cell);
+                    if (cx < 0 || cy < 0 || cx >= n || cy >= n) continue;
+                    if (p[2] > t->grid[cy * n + cx]) t->grid[cy * n + cx] = p[2];
+                }
+            }
+        }
         float lo = 1e30f, hi = -1e30f;
         for (unsigned int i = 0; i < nv; ++i) {
             const float *p = (const float *)(gpu + (size_t)i * vstride);
@@ -508,6 +551,27 @@ static GLuint white_texture(void) {
    neun Punkte breit und die Markierung weg, waehrend die Materialgruppen die
    Kanten scharf haben.  Also der Kachel das Bild wieder wegnehmen - dann
    zeichnet terrain_draw Gruppe fuer Gruppe. */
+int terrain_height_at(const struct terrain *t, float east, float north, float *height) {
+    if (!t->grid || t->grid_n <= 0) return 0;
+    int cx = (int)((east - t->grid_x0) / t->grid_cell);
+    int cy = (int)((north - t->grid_y0) / t->grid_cell);
+    if (cx < 0 || cy < 0 || cx >= t->grid_n || cy >= t->grid_n) return 0;
+    /* Die eigene Zelle und ihre Nachbarn: eine leere Zelle (keine Eckpunkte
+       darin) soll kein Loch im Boden sein. */
+    float top = -1e30f;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            int x = cx + dx, y = cy + dy;
+            if (x < 0 || y < 0 || x >= t->grid_n || y >= t->grid_n) continue;
+            float v = t->grid[y * t->grid_n + x];
+            if (v > top) top = v;
+        }
+    }
+    if (top < -1e29f) return 0;
+    *height = top;
+    return 1;
+}
+
 void terrain_drop_texture(struct terrain *t) {
     if (t->tex) {
         glDeleteTextures(1, &t->tex);

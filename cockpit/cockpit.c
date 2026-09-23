@@ -1834,6 +1834,26 @@ int main(int argc, char **argv) {
         double t_now = now_s();
         float dt = (float)(t_now - t_prev);
         t_prev = t_now;
+        /* Der Boden ist keine Ebene: unter dem Flugzeug nachsehen, wie hoch
+           die Kachel dort liegt.  Ohne das steht er auf der Hoehe des
+           Startplatzes, und man fliegt durch Berge hindurch. */
+        if (have_terrain && !screen_start) {
+            float ground = 0.0f;
+            int found = 0;
+            for (int i = 0; i < nland && !found; ++i) {
+                if (is_coarse[i]) continue;
+                found = terrain_height_at(&land[i], fdm.east_m, fdm.north_m, &ground);
+            }
+            if (found) {
+                /* Weich nachziehen: eine Rasterzelle ist rund 190 m breit, und
+                   der Sprung von einer zur naechsten soll das Flugzeug nicht
+                   in die Luft werfen. */
+                float step = dt * 4.0f;
+                if (step > 1.0f) step = 1.0f;
+                if (step < 0.0f) step = 0.0f;
+                fdm.ground_m += (ground - fdm.ground_m) * step;
+            }
+        }
         /* Neigen ist der Knueppel: 30 Grad Neigung = voller Ausschlag,
            die ersten 4 Grad bleiben tot, sonst zittert es. */
         float sr = stick_from_tilt(tilt_roll);

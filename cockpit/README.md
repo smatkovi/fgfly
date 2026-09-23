@@ -625,6 +625,52 @@ ohne, damit eine Maus weiter funktioniert.
 schläft die App, sobald sie hinter dem liegt, was der Nutzer gerade offen hat,
 und man misst null Bilder.
 
+## Schwarze Flügel, Schrift auf dem Kopf, und ein Boden, der einer ist (23.09.2026)
+
+Vier Meldungen nach dem ersten Flug mit dem A320 — drei davon mit klarer
+Ursache, eine mit einer Frage zurück.
+
+**Die Tragflächen waren schwarz, weil die Textur 2133 × 2133 groß ist.** In
+OpenGL ES 2.0 gilt eine Textur, deren Kanten **keine Zweierpotenz** sind,
+zusammen mit Verkleinerungsstufen und `GL_REPEAT` als *unvollständig*, und
+unvollständig heisst: sie liefert Schwarz. `acbake.py` skaliert Modelltexturen
+jetzt auf die nächstkleinere Zweierpotenz (höchstens 1024), und `terrain.c`
+fängt krumme Größen ab (dann ohne Stufen, festgeklemmt statt wiederholt) —
+damit bleibt auch eine alte Datei sichtbar.
+
+**Die Beschriftung stand auf dem Kopf, weil ein PNG oben anfängt und GL
+unten.** In der `.ac`-Datei liegt der Nullpunkt der Texturkoordinate unten
+links; unsere `.tex`-Dateien wurden aber Zeile für Zeile von oben
+geschrieben. `acbake.py` schreibt sie jetzt von unten nach oben. (Die
+Geländebilder sind davon nicht betroffen — der Backofen malt sie selbst und
+dreht dabei schon richtig herum.)
+
+**Der Boden war eine Ebene.** `fdm.ground_m` wurde einmal beim Start gesetzt
+und danach nie wieder — man flog durch Berge hindurch und setzte auf der
+Höhe des Startplatzes auf. Jetzt legt jede Kachel beim Laden ein grobes
+**Höhenraster** an (64 × 64 Zellen, je der höchste Eckpunkt darin; bei einer
+12-km-Kachel rund 190 m je Zelle, 16 KB), und das Cockpit fragt es in jedem
+Bild unter dem Flugzeug ab. Damit folgt der Boden dem Gelände.
+
+Dabei fanden sich zwei verirrte Zeilen in `fdm.c`: `s->ground_m = 0.0f;`
+mitten im Aufsetzen — die Bodenhöhe wurde bei jeder Berührung auf null
+zurückgesetzt.
+
+**Und der A320 flog wie ein Propellerflugzeug:** der Schub fiel mit der Fahrt
+(`1 - v/90`), was für einen Festpropeller stimmt und für eine Turbine nicht.
+`acftconv.py` schreibt jetzt `jet 1`, wenn der Schub aus `<milthrust>` kommt,
+und das Flugmodell lässt den Schub dann stehen.
+
+**Geprüft ohne Gerät** (`fdmtest.c` treibt `fdm.c` auf dem Rechner):
+
+    c172, Motor aus, 600 m, 50 m/s  ->  -3,0 m/s, 60 kt, Bahn -5,7 Grad
+    A320, Motor aus, 600 m, 130 m/s ->  -6,0 m/s, 235 kt, Bahn -2,9 Grad
+
+Beide fallen also. Was Sebastian gesehen hat („das Flugzeug fällt gar nicht
+runter“), ist damit noch nicht erklärt — die nächste Frage ist, ob es um den
+Start „IN DER LUFT“ ging (dort steht der Schub auf 0,75, das Flugzeug hält
+die Höhe) oder um einen Überzieher, der nicht kommt.
+
 ## Was als Nächstes drangehört
 
 1. Ein feineres Bild für die Kachel unter einem (2048 statt 512).

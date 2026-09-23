@@ -40,6 +40,12 @@ struct terrain {
     float local_center[3];      /* Mittelpunkt im System der ersten Kachel */
     float radius;
     float centre_height;        /* Gelaendehoehe in der Mitte der Kachel */
+    /* Ein grobes Hoehenraster ueber die Kachel: je Zelle der hoechste Punkt.
+       Damit weiss das Flugmodell, wie hoch der Boden unter dem Flugzeug
+       liegt - ohne das faellt man durch Berge hindurch. */
+    float grid_x0, grid_y0, grid_cell;
+    int grid_n;
+    float *grid;
     char name[32];
 };
 
@@ -48,6 +54,10 @@ void terrain_draw(const struct terrain *t, const float mvp[16], const float ligh
 /* Nimmt der Kachel ihr gebackenes Bild - dann wird wieder nach Material
    gezeichnet (Flugplaetze, wo die Bahn scharf sein soll). */
 void terrain_drop_texture(struct terrain *t);
+
+/* Wie hoch liegt der Boden an dieser Stelle?  1, wenn die Kachel die Stelle
+   ueberhaupt deckt. */
+int terrain_height_at(const struct terrain *t, float east, float north, float *height);
 /* Ein Ort auf der Erde im oertlichen System der geladenen Kacheln. */
 void terrain_frame_local(const struct terrain_frame *f, double lat_deg, double lon_deg,
                          double elev_m, float out[3]);

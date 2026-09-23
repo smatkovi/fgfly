@@ -33,6 +33,7 @@ void fdm_default(struct fdm_aircraft *a) {
     a->wing_area_m2 = 16.165f;
     a->wing_span_m = 10.912f;
     a->thrust_max_n = 2400.0f;
+    a->jet = 0;
     a->rpm_idle = 700.0f;
     a->rpm_max = 2700.0f;
     a->cd0 = 0.027f;
@@ -79,6 +80,7 @@ int fdm_load(struct fdm_aircraft *a, const char *path) {
         else if (!strcmp(key, "wing_area_m2")) a->wing_area_m2 = (float)atof(rest);
         else if (!strcmp(key, "wing_span_m")) a->wing_span_m = (float)atof(rest);
         else if (!strcmp(key, "thrust_max_n")) a->thrust_max_n = (float)atof(rest);
+        else if (!strcmp(key, "jet")) a->jet = atoi(rest);
         else if (!strcmp(key, "rpm_idle")) a->rpm_idle = (float)atof(rest);
         else if (!strcmp(key, "rpm_max")) a->rpm_max = (float)atof(rest);
         else if (!strcmp(key, "cd0")) a->cd0 = (float)atof(rest);
@@ -163,7 +165,10 @@ void fdm_step(struct fdm_state *s, const struct fdm_aircraft *a, float dt,
     float q = 0.5f * RHO * s->v_ms * s->v_ms;
     float lift = q * a->wing_area_m2 * cl;
     float drag = q * a->wing_area_m2 * cd;
-    float thrust = throttle * a->thrust_max_n * (1.0f - clampf(s->v_ms / 90.0f, 0.0f, 0.7f));
+    /* Ein Propeller verliert mit der Fahrt an Schub, eine Turbine kaum -
+       sonst haette der A320 beim Abheben noch ein Drittel seines Schubes. */
+    float thrust = throttle * a->thrust_max_n;
+    if (!a->jet) thrust *= 1.0f - clampf(s->v_ms / 90.0f, 0.0f, 0.7f);
 
     float gamma = s->gamma_deg * (float)M_PI / 180.0f;
     float roll = s->roll_deg * (float)M_PI / 180.0f;
@@ -187,7 +192,6 @@ void fdm_step(struct fdm_state *s, const struct fdm_aircraft *a, float dt,
             s->gamma_deg = 0.0f;
             s->vs_ms = 0.0f;
             s->alt_m = s->ground_m;
-    s->ground_m = 0.0f;
         }
         if (s->v_ms > 0.5f)          /* das Bugrad lenkt, und zwar mit dem Ruder */
             s->heading_deg += rudder * 12.0f * dt * (s->v_ms < 15.0f ? 1.0f : 15.0f / s->v_ms);
@@ -203,7 +207,6 @@ void fdm_step(struct fdm_state *s, const struct fdm_aircraft *a, float dt,
         s->alt_m += s->vs_ms * dt;
         if (s->alt_m <= s->ground_m) {                   /* aufgesetzt */
             s->alt_m = s->ground_m;
-    s->ground_m = 0.0f;
             s->vs_ms = 0.0f;
             s->gamma_deg = 0.0f;
             s->on_ground = 1;

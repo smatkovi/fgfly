@@ -362,6 +362,10 @@ def convert(target, out_path=None):
         f.write("wing_span_m %.3f\n" % (span_ft * 0.3048))
         f.write("thrust_max_n %.0f\n" %
                 (thrust_n if thrust_n else (hp * NEWTON_PER_HP if hp else 2600.0)))
+        if thrust_n:
+            # Eine Turbine verliert mit der Fahrt kaum Schub - der Propeller
+            # schon.  Das Flugmodell braucht den Unterschied.
+            f.write("jet 1\n")
         f.write("rpm_idle %.0f\n" % 700.0)
         f.write("rpm_max %.0f\n" % rpm_max)
         f.write("cd0 %.4f\n" % cd0)
