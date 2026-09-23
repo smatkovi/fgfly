@@ -37,20 +37,26 @@ static const char *TERRAIN_VERT =
     "uniform lowp vec3 u_light;\n"
     "uniform vec3 u_texmap;\n"
     "uniform mediump float u_detail;\n"
+    "uniform mediump vec2 u_fog;\n"          /* Anfang, 1/(Ende-Anfang) */
     "attribute vec3 a_pos;\n"
     "attribute vec3 a_nrm;\n"
-    "varying lowp float v_shade;\n"
+    /* Helligkeit und Dunst teilen sich ein varying - davon hat die SGX 530
+       nur acht, und der Dunst ist es wert: ohne ihn hoert die Welt an der
+       letzten Kachel mit einer Kante auf. */
+    "varying lowp vec2 v_sh;\n"
     "varying mediump vec2 v_uv;\n"
     "varying mediump vec2 v_grain;\n"
     "void main() {\n"
-    "  v_shade = 0.45 + 0.55 * max(dot(normalize(a_nrm), u_light), 0.0);\n"
+    "  v_sh.x = 0.45 + 0.55 * max(dot(normalize(a_nrm), u_light), 0.0);\n"
     "  v_uv = vec2((a_pos.x - u_texmap.x) * u_texmap.z,\n"
     "              1.0 - (a_pos.y - u_texmap.y) * u_texmap.z);\n"
     /* Der Ort geht bis 11 km; mediump traegt davon keine Nachkommastellen
        mehr.  Deshalb vorher auf einen kleinen Bereich zurueckfalten - zehn
        Wiederholungen je 600 m, was an der Naht glatt aufgeht. */
     "  v_grain = fract(a_pos.xy * u_detail) * 10.0;\n"
-    "  gl_Position = u_mvp * vec4(a_pos, 1.0);\n"
+    "  vec4 clip = u_mvp * vec4(a_pos, 1.0);\n"
+    "  v_sh.y = clamp((clip.w - u_fog.x) * u_fog.y, 0.0, 1.0);\n"
+    "  gl_Position = clip;\n"
     "}\n";
 
 /* u_col ist weiss, wenn die Kachel ein Bild hat, und sonst die Materialfarbe -
@@ -58,12 +64,14 @@ static const char *TERRAIN_VERT =
    Programm ohne Verzweigung im Fragment. */
 static const char *TERRAIN_FRAG =
     "uniform lowp vec3 u_col;\n"
+    "uniform lowp vec3 u_haze;\n"
     "uniform sampler2D u_tex;\n"
-    "varying lowp float v_shade;\n"
+    "varying lowp vec2 v_sh;\n"
     "varying mediump vec2 v_uv;\n"
     "varying mediump vec2 v_grain;\n"
     "void main() {\n"
-    "  gl_FragColor = vec4(u_col * texture2D(u_tex, v_uv).rgb * v_shade, 1.0);\n"
+    "  lowp vec3 c = u_col * texture2D(u_tex, v_uv).rgb * v_sh.x;\n"
+    "  gl_FragColor = vec4(mix(c, u_haze, v_sh.y), 1.0);\n"
     "}\n";
 
 /* Bis eine gebackene Bildkachel darunterliegt, faerbt der Materialname.
@@ -497,6 +505,22 @@ int terrain_load(struct terrain *t, const char *path, struct terrain_frame *fram
     glUniform1i(glGetUniformLocation(t->prog, "u_grain"), 1);
     /* Die Koernung wiederholt sich alle 24 m */
     glUniform1f(glGetUniformLocation(t->prog, "u_detail"), 1.0f / 600.0f);
+    /* Dunst: von sechs Kilometern an wird eingeblendet, bei zweiundzwanzig
+       ist nur noch Himmelsfarbe da - so hoert die Welt nicht mit einer Kante
+       auf, sondern verliert sich.  COCKPIT_FOG=<km>,<km> zum Probieren. */
+    {
+        float f0 = 6000.0f, f1 = 22000.0f;
+        const char *env = getenv("COCKPIT_FOG");
+        if (env) {
+            float a = 0.0f, b = 0.0f;
+            if (sscanf(env, "%f,%f", &a, &b) == 2 && b > a) {
+                f0 = a * 1000.0f;
+                f1 = b * 1000.0f;
+            }
+        }
+        glUniform2f(glGetUniformLocation(t->prog, "u_fog"), f0, 1.0f / (f1 - f0));
+        glUniform3f(glGetUniformLocation(t->prog, "u_haze"), 0.35f, 0.55f, 0.85f);
+    }
     shared_prog = t->prog;
     shared_mvp = t->u_mvp;
     shared_light = t->u_light;

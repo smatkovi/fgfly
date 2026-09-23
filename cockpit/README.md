@@ -719,6 +719,37 @@ damit man es ohne Finger sieht.
 
 ![A320 mit ausgefahrenen Klappen](a320-klappen.png)
 
+## Wie bei X-Plane: Dunst, unsichtbare Bedienung, grüne Anzeige (23.09.2026)
+
+![Die grüne Anzeige im Blickfeld](hud-gruen.png)
+
+**Dunst in die Ferne.** Der Boden hörte bisher mit einer Kante auf — dort,
+wo die letzte geladene Kachel endet. Jetzt blendet das Gelände von sechs
+Kilometern an in die Himmelsfarbe, bei zweiundzwanzig ist nur noch Himmel da.
+Gekostet hat das **kein** varying: Helligkeit und Dunst teilen sich eines
+(`varying lowp vec2 v_sh`) — auf der SGX 530 mit ihren acht ist das der
+Unterschied zwischen „geht“ und „geht nicht“. Die Entfernung kommt aus
+`clip.w`, ohne zusätzliche Rechnung. `COCKPIT_FOG=<km>,<km>` zum Probieren.
+
+**Die Bedienung ist weg, bis man sie anfasst.** Schubhebel, Klappen,
+Seitenruder, Fahrwerk, Bremse, Ansicht, Anlasser und das Kreuz sind
+unsichtbar; ein Finger auf dem Schirm blendet sie **durchscheinend** ein
+(Alpha 0,6), zweieinhalb Sekunden nach dem letzten Finger verschwinden sie in
+einer Sekunde wieder. Dazu musste das Mischen eingeschaltet werden — die
+Eckpunkte tragen ihr Alpha ohnehin schon mit. Im Menü bleibt alles sichtbar.
+
+**Die grüne Anzeige im Blickfeld** liegt auf Ansicht 1 (der Ansichtsknopf
+schaltet Kanzel → Blickfeld → Verfolger): eine Leiter aus Sprossen alle fünf
+Grad, mit der Lage mitgedreht, dazu Fahrt links, Höhe rechts und das Steigen
+darunter — sonst nichts. Die Kanzelsicht mit den vier Zifferblättern bleibt,
+wie sie war.
+
+**Ehrlich zum „eins zu eins“:** X-Planes Oberfläche habe ich dabei nicht vor
+mir gehabt, nur die Beschreibung aus dem APK
+([[xplane9-n950-apkenv]]: Schubhebel links, Klappen rechts, Bremse unten,
+HUD-Knopf oben links) und die übliche Form einer solchen Anzeige. Wenn es
+genauer sein soll, muss X-Plane einmal laufen und sein Bild danebenliegen.
+
 ## Was als Nächstes drangehört
 
 1. Ein feineres Bild für die Kachel unter einem (2048 statt 512).

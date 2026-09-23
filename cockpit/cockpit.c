@@ -136,6 +136,19 @@ static void push(float x, float y, const float c[4]) {
 }
 
 /* Rechteck in Bildschirmanteilen (0..1, links oben = 0,0) */
+/* Die Bedienelemente sind nicht zu sehen, solange niemand sie anfasst - und
+   dann durchscheinend, wie bei X-Plane.  `ui_alpha` faellt nach dem letzten
+   Finger von selbst wieder auf null. */
+static float ui_alpha = 0.0f;
+
+static void rect(float x, float y, float w, float h, const float c[4]);
+
+static void rect_ui(float x, float y, float w, float h, const float c[4]) {
+    if (ui_alpha <= 0.002f) return;
+    const float faded[4] = { c[0], c[1], c[2], c[3] * ui_alpha };
+    rect(x, y, w, h, faded);
+}
+
 static void rect(float x, float y, float w, float h, const float c[4]) {
     float x0 = x * 2.0f - 1.0f, x1 = (x + w) * 2.0f - 1.0f;
     float y0 = 1.0f - y * 2.0f, y1 = 1.0f - (y + h) * 2.0f;
@@ -299,6 +312,14 @@ static void glyph(float x, float y, float w, float h, int index, const float c[4
     }
 }
 
+static float text(float x, float y, float h, const char *str, const float c[4]);
+
+static float text_ui(float x, float y, float h, const char *str, const float c[4]) {
+    if (ui_alpha <= 0.002f) return x;
+    const float faded[4] = { c[0], c[1], c[2], c[3] * ui_alpha };
+    return text(x, y, h, str, faded);
+}
+
 /* Schreibt in Grossbuchstaben; was die Schrift nicht kennt, bleibt leer. */
 static float text(float x, float y, float h, const char *str, const float c[4]) {
     float w = h * 5.0f / 7.0f / aspect;
@@ -342,6 +363,16 @@ static void gauge(float cx, float cy, float r, float value, float vmax,
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
     spoke(cx, cy, -r * 0.12f, r * 0.78f, a0 + (a1 - a0) * frac, 0.010f, needle_col);
+}
+
+/* Eine Sprosse der Leiter im Blickfeld: zwei Striche links und rechts der
+   Mitte, in der Lage des Flugzeugs mitgedreht.  Ein halber Bildschirm sind
+   45 Grad - dieselbe Rechnung wie beim Horizont. */
+static void hud_rung(float angle_deg, float roll, float shift, float half,
+                     const float col[4]) {
+    float y = angle_deg / 45.0f;
+    horizon_quad(-half, y - 0.004f, -0.12f, y + 0.004f, roll, shift, col);
+    horizon_quad(0.12f, y - 0.004f, half, y + 0.004f, roll, shift, col);
 }
 
 static void build_frame(void) {
@@ -392,6 +423,28 @@ static void build_frame(void) {
         rect(0.495f, 0.405f, 0.010f, 0.045f, dim);       /* Seitenleitwerk */
     }
 
+    /* Die gruene Anzeige im Blickfeld - wie die HUD-Sicht von X-Plane:
+       Leiter fuer die Lage, Fahrt links, Hoehe rechts, sonst nichts.  Sie
+       sitzt auf der Sicht nach vorn, also in Ansicht 1. */
+    if (view_mode == 1) {
+        static const float hud[4] = {0.25f, 1.00f, 0.35f, 1.0f};
+        horizon_quad(-0.75f, -0.004f, 0.75f, 0.004f, roll, shift, hud);
+        for (int a = 5; a <= 20; a += 5) {
+            hud_rung((float)a, roll, shift, a % 10 ? 0.28f : 0.40f, hud);
+            hud_rung((float)-a, roll, shift, a % 10 ? 0.28f : 0.40f, hud);
+        }
+        /* Fahrt links, Hoehe rechts, Steigen darunter - in Ziffern, wie im
+           Blickfeld ueblich. */
+        number(0.045f, 0.46f, 0.030f, 0.070f, (int)(fdm.v_ms * 1.94384f + 0.5f), 3, hud);
+        number(0.80f, 0.46f, 0.030f, 0.070f,
+               (int)(fdm.alt_m * 3.28084f + 0.5f) % 100000, 5, hud);
+        int vs = (int)(fdm.vs_ms * 196.85f);
+        if (vs < 0) vs = -vs;
+        number(0.82f, 0.56f, 0.022f, 0.050f, vs, 4, hud);
+        rect(0.80f, 0.575f, 0.012f, 0.008f, hud);        /* Vorzeichen: Strich */
+        if (fdm.vs_ms > 0.1f) rect(0.804f, 0.567f, 0.004f, 0.024f, hud);
+    }
+
     /* Vier runde Instrumente: Fahrt, Hoehe, Variometer, Drehzahl.
        Nur in der Kanzelsicht - die freie Sicht und der Verfolger zeigen
        Gelaende, nicht Zifferblaetter. */
@@ -426,33 +479,37 @@ static void build_frame(void) {
     }
     }
 
+    /* Alles von hier an ist Bedienung: unsichtbar, bis ein Finger kommt, und
+       dann durchscheinend - so macht es X-Plane, und so bleibt die Sicht
+       frei.  `rect_ui` und `text_ui` blenden mit `ui_alpha`. */
+
     /* Schubhebel links, Klappen rechts - wie bei X-Plane */
-    rect(0.04f, 0.15f, 0.06f, 0.70f, track);
-    rect(0.035f, 0.15f + (1.0f - throttle) * 0.66f, 0.07f, 0.04f, knob);
-    rect(0.90f, 0.15f, 0.06f, 0.70f, track);
-    rect(0.895f, 0.15f + (1.0f - flaps) * 0.66f, 0.07f, 0.04f, knob);
+    rect_ui(0.04f, 0.15f, 0.06f, 0.70f, track);
+    rect_ui(0.035f, 0.15f + (1.0f - throttle) * 0.66f, 0.07f, 0.04f, knob);
+    rect_ui(0.90f, 0.15f, 0.06f, 0.70f, track);
+    rect_ui(0.895f, 0.15f + (1.0f - flaps) * 0.66f, 0.07f, 0.04f, knob);
 
     /* Fahrwerk links unter dem Schubhebel - wie bei X-Plane; gruen heisst
        draussen und verriegelt.  Bremse rechts, Ansicht oben links. */
-    rect(0.03f, 0.87f, 0.10f, 0.09f, gear_down ? green : dim);
-    rect(0.755f, 0.885f, 0.11f, 0.09f, brake ? lit : dim);
-    rect(0.14f, 0.03f, 0.13f, 0.08f,
-         view_mode == 0 ? dim : (view_mode == 1 ? knob : green));
+    rect_ui(0.03f, 0.87f, 0.10f, 0.09f, gear_down ? green : dim);
+    rect_ui(0.755f, 0.885f, 0.11f, 0.09f, brake ? lit : dim);
+    rect_ui(0.14f, 0.03f, 0.13f, 0.08f,
+            view_mode == 0 ? dim : (view_mode == 1 ? knob : green));
 
     /* Der Anlasser.  Steht der Motor, leuchtet er gruen und heisst START;
        laeuft er, ist er dunkel und heisst STOP. */
-    rect(0.30f, 0.03f, 0.13f, 0.08f, fdm.engine_on ? dim : green);
-    text(0.315f, 0.048f, 0.048f, fdm.engine_on ? "STOP" : "START",
-         fdm.engine_on ? white : black);
+    rect_ui(0.30f, 0.03f, 0.13f, 0.08f, fdm.engine_on ? dim : green);
+    text_ui(0.315f, 0.048f, 0.048f, fdm.engine_on ? "STOP" : "START",
+            fdm.engine_on ? white : black);
 
     /* Seitenruder: waagrecht unten, federt in die Mitte zurueck.  Am Boden
        lenkt es das Bugrad, in der Luft giert es. */
-    rect(0.22f, 0.925f, 0.40f, 0.045f, track);
-    rect(0.22f + (rudder + 1.0f) * 0.5f * 0.36f, 0.918f, 0.04f, 0.06f, knob);
+    rect_ui(0.22f, 0.925f, 0.40f, 0.045f, track);
+    rect_ui(0.22f + (rudder + 1.0f) * 0.5f * 0.36f, 0.918f, 0.04f, 0.06f, knob);
 
     /* Und ein Weg hinaus - ohne Fenstermanager gibt es sonst keinen. */
-    rect(0.915f, 0.02f, 0.07f, 0.085f, lit);
-    text(0.935f, 0.035f, 0.055f, "X", white);
+    rect_ui(0.915f, 0.02f, 0.07f, 0.085f, lit);
+    text_ui(0.935f, 0.035f, 0.055f, "X", white);
 }
 
 static GLuint compile(GLenum type, const char *src) {
@@ -1610,6 +1667,7 @@ int main(int argc, char **argv) {
     /* Beim Pruefen ueber ssh liegt das Fenster hinter dem, was der Nutzer
        gerade offen hat - dann pausiert die App und man misst nichts. */
     int never_pause = getenv("COCKPIT_NOPAUSE") != NULL;
+    double ui_touch_time = -100.0;      /* wann zuletzt ein Finger da war */
     /* Der Randwisch faengt am Bildschirmrand an.  Wir lesen den Schirm direkt
        und sehen denselben Finger; was am Rand aufsetzt, ruehren wir nicht an,
        sonst zieht das Wegwischen nebenher den Schubhebel.  COCKPIT_EDGE=0
@@ -1835,6 +1893,19 @@ int main(int argc, char **argv) {
         double t_now = now_s();
         float dt = (float)(t_now - t_prev);
         t_prev = t_now;
+
+        /* Bedienelemente wie bei X-Plane: unsichtbar, bis jemand den Schirm
+           anfasst, dann zweieinhalb Sekunden durchscheinend zu sehen und
+           danach in einer Sekunde wieder weg.  Im Menue sind sie immer da. */
+        if (touch_now.n > 0 || dragging) ui_touch_time = t_now;
+        {
+            double idle = t_now - ui_touch_time;
+            float a = 0.0f;
+            if (screen_start) a = 1.0f;
+            else if (idle < 2.5) a = 0.60f;
+            else if (idle < 3.5) a = 0.60f * (float)(3.5 - idle);
+            ui_alpha = a;
+        }
         /* Der Boden ist keine Ebene: unter dem Flugzeug nachsehen, wie hoch
            die Kachel dort liegt.  Ohne das steht er auf der Hoehe des
            Startplatzes, und man fliegt durch Berge hindurch. */
@@ -1975,7 +2046,10 @@ int main(int argc, char **argv) {
             glEnableVertexAttribArray(1);
             glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(struct vertex), &verts[0].x);
             glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(struct vertex), &verts[0].r);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDrawArrays(GL_TRIANGLES, 0, nverts);
+            glDisable(GL_BLEND);
         }
         eglSwapBuffers(dpy, surf);
         ++frames;
