@@ -1,0 +1,11 @@
+# Gebautes und Geholtes gehoert nicht in die Quellen: die Programme fuer das
+# Geraet entstehen mit build-n9.sh auf dem Baurechner, das Paket mit
+# packaging/build-deb.sh - und haengt als Datei am Release.
+build/
+*/build/
+*.deb
+__pycache__/
+*.pyc
+sgxprobe-jolla
+tools/aria2c
+tools/cacert.pem

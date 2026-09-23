@@ -1,0 +1,54 @@
+Kachel         Eckpunkte  Dreiecke    Mat.  groesstes Material
+3220096.btg.gz     29101     97416      17  DeciduousForest
+3220097.btg.gz     36076    129378      21  Freeway
+3220098.btg.gz     19103     69552      18  DryCrop
+3220099.btg.gz     16990     61957      19  DryCrop
+3220104.btg.gz     26583     89100      17  DeciduousForest
+3220105.btg.gz    109814    378278      22  Railroad
+3220106.btg.gz     15110     54607      20  Railroad
+3220107.btg.gz     13987     51902      20  DryCrop
+3220112.btg.gz     25895     91749      18  Town
+3220113.btg.gz     46711    163016      21  Railroad
+3220114.btg.gz     17760     65437      22  DryCrop
+3220115.btg.gz     13839     52583      23  DryCrop
+3220120.btg.gz     20844     75613      17  DryCrop
+3220121.btg.gz     17911     64583      13  DryCrop
+3220122.btg.gz     17427     62773      13  DryCrop
+3220123.btg.gz     15527     57976      20  DryCrop
+3220128.btg.gz     17083     60953      13  DryCrop
+3220129.btg.gz     15673     55482      11  DryCrop
+3220130.btg.gz     16845     60346      12  DryCrop
+3220131.btg.gz     17230     63909      18  DryCrop
+3220136.btg.gz     12095     44965      11  DryCrop
+3220137.btg.gz     12571     46342      13  DryCrop
+3220138.btg.gz     13538     48480      14  DryCrop
+3220139.btg.gz     15787     58005      22  DryCrop
+3220144.btg.gz     12861     47548      19  DryCrop
+3220145.btg.gz      9721     36677      17  DryCrop
+3220146.btg.gz     12093     43578      19  DryCrop
+3220147.btg.gz     15249     55946      22  DryCrop
+3220152.btg.gz     10622     38484      16  DryCrop
+3220153.btg.gz      7292     27058      13  DryCrop
+3220154.btg.gz     13775     50142      20  DryCrop
+3220155.btg.gz     14626     51770      14  DryCrop
+LKBA.btg.gz          112       174       2  Grass
+LKZN.btg.gz           36        44       2  Grass
+LOAL.btg.gz           14        18       2  Grass
+LOAR.btg.gz           38        55       3  Grass
+LOAS.btg.gz           16        20       2  Grass
+LOAU.btg.gz          303       448      13  Grass
+LOWW.btg.gz        27680     21636      31  lf_dbl_lane_queue_border
+LOXT.btg.gz          244       450      12  Grass
+
+40 Kacheln, 688182 Eckpunkte, 2378450 Dreiecke, 69 Materialien
+Dreiecke je Material, die zehn groessten:
+  DryCrop                    442639  18.6 %
+  Railroad                   337284  14.2 %
+  Town                       324927  13.7 %
+  Freeway                    270588  11.4 %
+  Road                       246197  10.4 %
+  DeciduousForest            189180   8.0 %
+  NaturalCrop                 90254   3.8 %
+  ComplexCrop                 75475   3.2 %
+  Industrial                  55497   2.3 %
+  Stream                      53669   2.3 %

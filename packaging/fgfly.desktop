@@ -1,0 +1,11 @@
+[Desktop Entry]
+Encoding=UTF-8
+Version=1.0
+Type=Application
+Name=FG Fly
+Comment=Flugsimulator mit FlightGears Daten
+Exec=/opt/fgfly/bin/fgfly-start.sh
+Icon=/usr/share/themes/base/meegotouch/icons/fgfly-80.png
+Terminal=false
+Categories=Game;
+X-Maemo-Wm-Class=cockpit

@@ -1,0 +1,25 @@
+Package: fgfly
+Version: @VERSION@
+Section: user/games
+Priority: extra
+Architecture: armel
+Depends: libc6, libx11-6
+Installed-Size: 0
+Maintainer: smatkovi <sebastian.matkovich@gmail.com>
+Description: Flugsimulator mit FlightGears Daten
+ Ein kleiner Flugsimulator fuer die N9 und die N950. Er benutzt FlightGears
+ Szenerie und Flugzeuge, aber nicht FlightGear selbst: die Kacheln und die
+ Flugmodelle werden auf dem Geraet in ein sparsames Format gebacken und von
+ einem eigenen Renderer gezeichnet, der mit OpenGL ES 2.0 und Shadern von
+ wenigen hundert Bytes auskommt.
+ .
+ Neigen steuert Rollen und Nicken, links der Schubhebel, rechts die Klappen,
+ unten Fahrwerk und Bremse. Fuenf Anzeigen: Fluglage, Fahrt, Hoehe, Variometer
+ und Drehzahl. Drei Sichten, darunter der Verfolger mit dem Flugzeugmodell.
+ .
+ Enthaelt weder Szenerie noch Flugzeuge: beides wird mit den mitgelieferten
+ Werkzeugen geholt und umgesetzt (fgfs-scenery, acftconv.py, acbake.py,
+ btgbake). Die Daten gehoeren nach MyDocs, dort ist Platz.
+Maemo-Display-Name: FG Fly
+Maemo-Icon-26:
+@ICON@
