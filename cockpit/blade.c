@@ -137,6 +137,15 @@ static void add_force(struct kraft *k, float fx, float fy, float fz,
     k->mz += rx * fy - ry * fx;
 }
 
+/* Wie stark ein Ruder wirkt: die Wurzel aus seinem Tiefenanteil ist die
+   uebliche Naeherung -- ein Ruder ueber einem Viertel der Tiefe wirkt etwa
+   halb so stark wie ein Anstellwinkel derselben Groesse.  Das Vorzeichen
+   bleibt erhalten. */
+static float wirk(float anteil) {
+    if (anteil == 0.0f) return 0.0f;
+    return anteil > 0.0f ? sqrtf(anteil) : -sqrtf(-anteil);
+}
+
 /* Ein Stueck einer Flaeche.  `side` ist +1 rechts, -1 links; `frac` liegt
    zwischen 0 (Wurzel) und 1 (Spitze). */
 static void segment(struct kraft *k, const struct blade_surface *sf, int side,
@@ -174,11 +183,15 @@ static void segment(struct kraft *k, const struct blade_surface *sf, int side,
        Viertel der Tiefe einnimmt, wirkt etwa wie ein halb so grosser
        Anstellwinkel -- die Wurzel aus dem Tiefenanteil ist die uebliche
        Naeherung. */
+    /* Die Anteile duerfen negativ sein: dann schlaegt das Ruder andersherum
+       aus.  YASim schreibt das als `invert`, und bei einem Enten-Flugzeug
+       ist es keine Feinheit, sondern der Unterschied zwischen Hochziehen
+       und Druecken. */
     float defl = 0.0f;
-    if (sf->flap > 0.0f) defl += flap * 30.0f * DEG * sqrtf(sf->flap);
-    if (sf->aileron > 0.0f) defl -= ail * side * 20.0f * DEG * sqrtf(sf->aileron);
-    if (sf->elevator > 0.0f) defl -= elev * 25.0f * DEG * sqrtf(sf->elevator);
-    if (sf->rudder > 0.0f) defl += rud * 25.0f * DEG * sqrtf(sf->rudder);
+    defl += flap * 30.0f * DEG * wirk(sf->flap);
+    defl -= ail * side * 20.0f * DEG * wirk(sf->aileron);
+    defl -= elev * 25.0f * DEG * wirk(sf->elevator);
+    defl += rud * 25.0f * DEG * wirk(sf->rudder);
 
     float inc = (sf->incidence_deg + sf->twist_deg * frac) * DEG;
     float aspect = sf->length * 2.0f / (sf->chord * (1.0f + sf->taper) * 0.5f);
@@ -262,11 +275,29 @@ void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
         }
     }
 
-    /* Schub laengs, am Bug angreifend.  Ein Propeller verliert mit der
-       Fahrt, eine Turbine kaum. */
+    /* Schub laengs, am Bug angreifend.
+     *
+     * Ein Propeller setzt Leistung um, nicht Kraft: `T = P / v`.  Im Stand
+     * waere das unendlich, also begrenzt der Standschub aus der
+     * Momententheorie, `T = (2 rho A P^2)^(1/3)`.  Das ist der Grund,
+     * warum ein 115-PS-Flugzeug beim Anrollen mehr als das Dreifache
+     * dessen zieht, was es bei Reisegeschwindigkeit zieht -- mit dem alten
+     * linearen Abfall dauerte der Startlauf 38 Sekunden statt zehn.
+     *
+     * Eine Turbine liefert dagegen naeherungsweise festen Schub. */
     {
-        float thrust = throttle * a->thrust_max_n;
-        if (!a->jet) thrust *= 1.0f - clampf(s->u / 90.0f, 0.0f, 0.7f);
+        float thrust;
+        if (a->jet || a->power_w <= 0.0f) {
+            thrust = throttle * a->thrust_max_n;
+            if (!a->jet) thrust *= 1.0f - clampf(s->u / 90.0f, 0.0f, 0.7f);
+        } else {
+            float P = throttle * a->power_w;
+            float rad = a->prop_r > 0.1f ? a->prop_r : 0.9f;
+            float flaeche = (float)M_PI * rad * rad;
+            float stand = cbrtf(2.0f * rho * flaeche * P * P);
+            float schnell = P * 0.82f / (s->u > 3.0f ? s->u : 3.0f);
+            thrust = schnell < stand ? schnell : stand;
+        }
         add_force(&k, thrust, 0.0f, 0.0f, 0.5f, 0.0f, 0.0f);
     }
 
@@ -336,10 +367,26 @@ void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
     s->heading_deg += dpsi * RAD * dt;
     if (s->pitch_deg > 87.0f) s->pitch_deg = 87.0f;
     if (s->pitch_deg < -87.0f) s->pitch_deg = -87.0f;
-    while (s->roll_deg > 180.0f) s->roll_deg -= 360.0f;
-    while (s->roll_deg < -180.0f) s->roll_deg += 360.0f;
-    while (s->heading_deg >= 360.0f) s->heading_deg -= 360.0f;
-    while (s->heading_deg < 0.0f) s->heading_deg += 360.0f;
+    /* Winkel mit fmodf normieren, nicht in einer Schleife: Wird ein Wert
+       unendlich -- eine zu grosse Kraft, eine Traegheit nahe null --, dann
+       laeuft `while (x >= 360) x -= 360` fuer immer.  Genau das ist
+       passiert, und der Prueflauf blieb haengen statt abzustuerzen. */
+    s->roll_deg = fmodf(s->roll_deg, 360.0f);
+    if (s->roll_deg > 180.0f) s->roll_deg -= 360.0f;
+    if (s->roll_deg < -180.0f) s->roll_deg += 360.0f;
+    s->heading_deg = fmodf(s->heading_deg, 360.0f);
+    if (s->heading_deg < 0.0f) s->heading_deg += 360.0f;
+
+    /* Und wenn doch etwas entgleist ist: anhalten statt Unsinn rechnen.
+       Ein Flugmodell, das NaN ausgibt, reisst den ganzen Renderer mit. */
+    if (!isfinite(s->u) || !isfinite(s->w) || !isfinite(s->p) ||
+        !isfinite(s->q) || !isfinite(s->alt_m) || !isfinite(s->roll_deg)) {
+        s->u = s->v = s->w = 0.0f;
+        s->p = s->q = s->r = 0.0f;
+        s->roll_deg = s->pitch_deg = 0.0f;
+        if (!isfinite(s->alt_m)) s->alt_m = s->ground_m;
+        if (!isfinite(s->heading_deg)) s->heading_deg = 0.0f;
+    }
 
     /* Vom Rumpf in die Welt: wohin es wirklich geht. */
     sp = sinf(s->roll_deg * DEG); cp = cosf(s->roll_deg * DEG);
@@ -396,6 +443,8 @@ int blade_load(struct blade_aircraft *a, const char *path) {
         else if (!strcmp(key, "rpm_max")) sscanf(rest, "%f", &a->rpm_max);
         else if (!strcmp(key, "jet")) sscanf(rest, "%d", &a->jet);
         else if (!strcmp(key, "cd_body")) sscanf(rest, "%f", &a->cd_body);
+        else if (!strcmp(key, "leistung_w")) sscanf(rest, "%f", &a->power_w);
+        else if (!strcmp(key, "propeller_r")) sscanf(rest, "%f", &a->prop_r);
         else if (!strcmp(key, "flaeche") && a->nsurf < BLADE_MAX_SURF) {
             struct blade_surface *s = &a->surf[a->nsurf];
             int n = sscanf(rest, "%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d",

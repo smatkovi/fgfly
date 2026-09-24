@@ -286,7 +286,7 @@ def convert_yasim(path, out_path):
         a += 2.0
 
     with open(out_path, "w") as f:
-        f.write("# fdm1 %s (aus YASim %s)\n" % (name, os.path.basename(path)))
+        f.write("# fdm2 %s (aus YASim %s)\n" % (name, os.path.basename(path)))
         f.write("name %s\n" % name)
         f.write("mass_kg %.1f\n" % mass_kg)
         f.write("wing_area_m2 %.3f\n" % area)
@@ -300,6 +300,23 @@ def convert_yasim(path, out_path):
         write_table(f, "cd_alpha", cd_rows)
         write_table(f, "cl_flap", [(0.0, 0.0), (30.0, 0.25)])
         write_table(f, "cd_flap", [(0.0, 0.0), (30.0, 0.015)])
+        # Und darunter die Geometrie selbst: dieselbe Datei fuettert damit
+        # beide Modelle -- das alte liest die Tabellen und ueberliest den
+        # Rest, das neue nimmt die Flaechen.
+        geo = yasim_geometry(root, mass_kg)
+        if geo:
+            getrimmt = trimmen(geo[0], mass_kg, v_cru)
+            write_geometry(f, geo, mass_kg)
+            # Die Leistung selbst, nicht nur ein daraus geschaetzter Schub:
+            # ein Propeller zieht beim Anrollen ein Vielfaches dessen, was
+            # er bei Reisegeschwindigkeit zieht, und das entscheidet ueber
+            # den Startlauf.
+            radius = 0.0
+            for prop in root.findall(".//propeller"):
+                radius = max(radius, _f(prop, "radius", 0.0))
+            if hp > 0.0:
+                f.write("leistung_w %.0f\n" % (hp * 745.7))
+                f.write("propeller_r %.2f\n" % (radius if radius > 0.1 else 0.9))
 
     print("%s (YASim) -> %s (%d Bytes)" % (name, out_path, os.path.getsize(out_path)))
     print("  Masse %.0f kg, Flaeche %.1f m2, Streckung %.1f, %.0f PS" %
@@ -307,7 +324,388 @@ def convert_yasim(path, out_path):
     print("  Anflug %.0f kt bei %.0f Grad -> cl %.2f; Reise %.0f kt, %.0f PS -> cd0 %.4f" %
           (v_app * 1.94384, aoa_app, cl_app, v_cru * 1.94384, cruise_hp, cd0))
     print("  Abriss bei %.0f Grad, %d Stuetzstellen" % (stall_deg, len(cl_rows)))
+    if geo:
+        print("  Geometrie: %d Flaechen, %d Beine, Schwerpunkt aus der %s"
+              % (len(geo[0]), len(geo[1]), geo[5]))
+        if geo[4]:
+            print("  Traegheit %.0f / %.0f / %.0f kg m2" % geo[4])
+        print("  Neutralpunkt liegt %.2f m hinter dem Schwerpunkt%s"
+              % (-geo[6], "" if geo[6] < 0 else "  -- INSTABIL"))
+        if getrimmt:
+            print("  Getrimmt fuer Reiseflug: Anstellwinkel %.1f Grad, "
+                  "Leitwerk %.1f Grad" % getrimmt)
 
+
+
+# ---------------------------------------------------------------------------
+# Die Geometrie durchreichen, statt sie zu Beiwerten zusammenzurechnen.
+#
+# YASim beschreibt das Flugzeug so, wie das Blattelementverfahren es braucht:
+# Flaechen mit Lage, Tiefe, Laenge, Zuspitzung, Einstellwinkel, Schraenkung,
+# V-Stellung, Pfeilung, Woelbung und Abrissverhalten.  Genau das schreiben
+# wir jetzt zusaetzlich in die .fdm-Datei -- die Beiwertetabellen bleiben
+# daneben stehen, damit dieselbe Datei auch das alte Modell noch fuettert.
+#
+# Zwei Dinge muessen dabei umgerechnet werden:
+#
+# 1. **Die Achsen.**  YASim zaehlt x nach vorn, y nach rechts, z nach *oben*
+#    -- man sieht es an den Fahrwerken, deren z negativ ist, weil das Rad
+#    unten haengt.  Das Flugmodell zaehlt z nach unten, also Vorzeichen
+#    drehen.
+#
+# 2. **Der Ursprung.**  YASim-Koordinaten haengen an einem beliebigen Punkt
+#    des 3D-Modells, nicht am Schwerpunkt; den rechnet YASim aus den Massen
+#    aus, die wir nicht haben.  Also wird er aus der Geometrie geschaetzt:
+#    Der Neutralpunkt ist der flaechengewichtete Angriffspunkt aller
+#    waagrechten Flaechen, und der Schwerpunkt liegt ein Stueck davor --
+#    acht Prozent der mittleren Tiefe, ein ueblicher Stabilitaetsabstand.
+#    Das ist geschaetzt, aber aus den Zahlen des Flugzeugs geschaetzt, und
+#    es ist die einzige Stelle, an der geschaetzt wird.
+
+def _f(node, name, default=0.0):
+    try:
+        return float(node.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _stall(node):
+    st = node.find("stall")
+    if st is None:
+        return 16.0, 4.0, 1.5
+    return _f(st, "aoa", 16.0), _f(st, "width", 4.0), _f(st, "peak", 1.5)
+
+
+def _controls(node):
+    """Welches Ruder auf welcher Flaeche sitzt -- YASim sagt es ueber die
+    Achse, an die der Klappensatz gehaengt ist."""
+    anteile = {"flap": 0.0, "aileron": 0.0, "elevator": 0.0, "rudder": 0.0}
+    for ci in node.findall("control-input"):
+        axis = ci.get("axis", "")
+        ctrl = ci.get("control", "")
+        if not ctrl.startswith("FLAP"):
+            continue
+        klappe = node.find(ctrl.lower())
+        if klappe is None:
+            continue
+        # Spannweitenanteil mal ein Viertel der Tiefe: so gross ist ein Ruder
+        # ueblicherweise, und genauer sagt es die Datei nicht.
+        anteil = max(0.0, _f(klappe, "end", 1.0) - _f(klappe, "start", 0.0)) * 0.25
+        # `invert` sagt, in welche Richtung das Ruder ausschlaegt.  Beim
+        # Enten-Flugzeug sitzt das Hoehenruder vorn: Ziehen heisst dort
+        # **mehr** Auftrieb, nicht weniger.  Ohne diese Zeile laesst sich
+        # ein Long-EZ nicht hochziehen, sondern nur druecken.
+        if ci.get("invert", "false").lower() in ("true", "1"):
+            anteil = -anteil
+        for name, wort in (("aileron", "aileron"), ("elevator", "elevator"),
+                           ("rudder", "rudder"), ("flap", "flaps")):
+            if wort in axis and abs(anteil) > abs(anteile[name]):
+                anteile[name] = anteil
+    return anteile
+
+
+def yasim_geometry(root, mass_kg=0.0):
+    """Liefert (flaechen, beine, flaeche_m2, spannweite_m) oder None."""
+    flaechen = []
+    for tag in ("wing", "mstab", "hstab", "vstab"):
+        for node in root.findall(tag):
+            chord = _f(node, "chord")
+            length = _f(node, "length")
+            if chord <= 0.0 or length <= 0.0:
+                continue
+            aoa, width, peak = _stall(node)
+            c = _controls(node)
+            flaechen.append({
+                "tag": tag,
+                "x": _f(node, "x"), "y": _f(node, "y"), "z": _f(node, "z"),
+                "chord": chord, "length": length,
+                "taper": _f(node, "taper", 1.0),
+                "incidence": _f(node, "incidence"),
+                "twist": _f(node, "twist"),
+                "dihedral": _f(node, "dihedral"),
+                "sweep": _f(node, "sweep"),
+                "camber": _f(node, "camber"),
+                "stall_aoa": aoa, "stall_width": width, "stall_peak": peak,
+                "flap": c["flap"], "aileron": c["aileron"],
+                "elevator": c["elevator"], "rudder": c["rudder"],
+                "vertical": 1 if tag == "vstab" else 0,
+                # Ein Seitenleitwerk steht in der Datei so oft, wie es es
+                # gibt (Winglets zweimal); alles andere spiegelt YASim selbst.
+                "mirror": 0 if tag == "vstab" else 1,
+            })
+    if not flaechen:
+        return None
+
+    beine = []
+    for node in root.findall("gear"):
+        lenkbar, gebremst = 0.0, 0.0
+        for ci in node.findall("control-input"):
+            ctrl = ci.get("control", "")
+            if ctrl == "STEER":
+                lenkbar = 1.0
+            if ctrl == "BRAKE":
+                gebremst = 1.0
+        beine.append({
+            "x": _f(node, "x"), "y": _f(node, "y"), "z": _f(node, "z"),
+            "spring": _f(node, "spring", 1.0),
+            "damp": _f(node, "damp", 1.0),
+            "compression": _f(node, "compression", 0.2),
+            "steer": lenkbar, "brake": gebremst,
+        })
+
+    area, span = 0.0, 0.0
+    for s in flaechen:
+        if s["vertical"]:
+            continue
+        halb = s["length"] * s["chord"] * (1.0 + s["taper"]) / 2.0
+        area += halb * (2 if s["mirror"] else 1)
+        if s["tag"] in ("wing", "mstab"):
+            span = max(span, 2.0 * (abs(s["y"]) + s["length"]))
+
+    # Erst versuchen, den Schwerpunkt aus der Masseverteilung zu rechnen --
+    # das ist der ehrliche Weg und liefert die Traegheit gleich mit.
+    traegheit = None
+    schwer = None
+    if mass_kg > 0.0:
+        erg = massenpunkte(root, flaechen, mass_kg)
+        if erg:
+            schwer, traegheit = erg
+
+    # Der Neutralpunkt: der Punkt, um den das Nickmoment sich nicht mehr
+    # aendert, wenn der Anstellwinkel steigt.  Gewichtet wird mit Flaeche
+    # **mal Auftriebsanstieg** -- ein kurzes Leitwerk kleiner Streckung
+    # traegt je Quadratmeter deutlich weniger bei als der Fluegel, und wer
+    # nur die Flaeche nimmt, schiebt den Punkt zu weit nach hinten.  Genau
+    # das ist passiert: die AG-14 bekam ihren Schwerpunkt hinter den
+    # Neutralpunkt und taumelte nach zehn Sekunden.
+    summe, gewicht, tiefe = 0.0, 0.0, 0.0
+    for s in flaechen:
+        if s["vertical"]:
+            continue
+        a = s["length"] * s["chord"] * (1.0 + s["taper"]) / 2.0 * (2 if s["mirror"] else 1)
+        mittel = s["chord"] * (1.0 + s["taper"]) / 2.0
+        streckung = max(1.0, (2.0 * s["length"] if s["mirror"] else s["length"]) / max(0.01, mittel))
+        anstieg = 2.0 * math.pi * streckung / (streckung + 2.0)
+        w = a * anstieg
+        summe += w * (s["x"] - 0.25 * s["chord"])   # Angriffspunkt bei t/4
+        gewicht += w
+        tiefe += w * s["chord"]
+    if gewicht <= 0.0:
+        return None
+    x_np = summe / gewicht
+    mittlere_tiefe = tiefe / gewicht
+    # Zwoelf Prozent Stabilitaetsmass: so viel liegt der Schwerpunkt vor dem
+    # Neutralpunkt.  Bei einem echten Flugzeug sind es 5 bis 15 Prozent.
+    x_cg = x_np + 0.12 * mittlere_tiefe
+
+    groesste = max((s for s in flaechen if not s["vertical"]),
+                   key=lambda s: s["length"] * s["chord"])
+    z_cg = groesste["z"]
+    y_cg = 0.0
+    quelle = "Neutralpunkt"
+    if schwer:
+        x_cg, y_cg, z_cg = schwer
+        quelle = "Masseverteilung"
+
+    for s in flaechen:
+        s["x"] -= x_cg
+        s["y"] -= y_cg
+        s["z"] = -(s["z"] - z_cg)
+    for b in beine:
+        b["x"] -= x_cg
+        b["y"] -= y_cg
+        b["z"] = -(b["z"] - z_cg)
+    return flaechen, beine, area, span, traegheit, quelle, x_np - x_cg
+
+
+
+
+def massenpunkte(root, flaechen, mass_kg):
+    """Der Schwerpunkt aus der Masseverteilung, nicht aus einer Faustregel.
+
+    YASim macht es genauso: Die Leermasse wird ueber die Bauteile verteilt --
+    Rumpf nach Volumen, Flaechen nach Flaeche mal Tiefe --, dazu kommen die
+    Punktmassen, die in der Datei stehen (Ballast, Propeller, Tanks).  Der
+    Schwerpunkt ist dann `Summe m*r / Summe m`, und aus derselben Summe
+    fallen die Traegheitsmomente heraus: `Ixx = Summe m*(y^2+z^2)` und so
+    fort.
+
+    Das ist der Unterschied zwischen "geschaetzt" und "gerechnet": Vorher
+    stand der Schwerpunkt dort, wo eine angenommene Stabilitaetsreserve ihn
+    hinlegte, und die Traegheit kam aus Spannweite mal Daumen.  Jetzt
+    kommen beide aus den Zahlen des Flugzeugs.
+
+    Punkte kommen in YASim-Koordinaten heraus (x vorn, y rechts, z oben).
+    """
+    punkte = []      # (masse_kg, x, y, z)
+    fest = 0.0
+
+    def zu(masse, x, y, z):
+        punkte.append((masse, x, y, z))
+
+    # 1. Punktmassen, die dastehen.  Ballast in Pfund, wie alles bei YASim.
+    for b in root.findall("ballast"):
+        m = _f(b, "mass") * LB_TO_KG
+        if m != 0.0:
+            zu(m, _f(b, "x"), _f(b, "y"), _f(b, "z"))
+    for w in root.findall(".//weight"):
+        m = _f(w, "mass-lbs") * LB_TO_KG
+        if m <= 0.0 and "pilot" in w.get("mass-prop", ""):
+            # Der Pilot haengt in YASim an einer Eigenschaft, nicht an einer
+            # Zahl -- seine Masse steht also nirgends in der Datei.  Sie
+            # gehoert trotzdem dazu, und vor allem gehoert sie **dorthin**,
+            # wo er sitzt: bei der AG-14 einen Meter vor dem Fluegel.  Ohne
+            # ihn lag der Schwerpunkt hinter dem Neutralpunkt, und das
+            # Flugzeug war nicht zu halten.
+            m = 170.0 * LB_TO_KG
+        if m > 0.0:
+            zu(m, _f(w, "x"), _f(w, "y"), _f(w, "z"))
+    for t in root.findall(".//tank"):
+        # Tanks sind im Leerzustand leer; ein Fuenftel Sprit ist die
+        # Annahme, mit der YASim auch den Anflug rechnet.
+        m = _f(t, "capacity") * LB_TO_KG * 0.2
+        if m > 0.0:
+            zu(m, _f(t, "x"), _f(t, "y"), _f(t, "z"))
+    for p in root.findall(".//propeller"):
+        m = _f(p, "mass") * LB_TO_KG
+        if m > 0.0:
+            zu(m, _f(p, "x"), _f(p, "y"), _f(p, "z"))
+    fest = sum(m for m, _x, _y, _z in punkte)
+
+    # 2. Die Struktur: was uebrigbleibt, nach Volumen verteilt.
+    struktur = []
+    for fus in root.findall("fuselage"):
+        ax, ay, az = _f(fus, "ax"), _f(fus, "ay"), _f(fus, "az")
+        bx, by, bz = _f(fus, "bx"), _f(fus, "by"), _f(fus, "bz")
+        laenge = math.sqrt((bx - ax) ** 2 + (by - ay) ** 2 + (bz - az) ** 2)
+        breite = _f(fus, "width", 1.0)
+        if laenge <= 0.0 or breite <= 0.0:
+            continue
+        # In drei Stuecke, damit die Traegheit um die Querachse stimmt --
+        # ein Punkt in der Mitte wuesste nichts von der Laenge.
+        for anteil in (0.2, 0.5, 0.8):
+            struktur.append((laenge * breite * breite / 3.0,
+                             ax + (bx - ax) * anteil,
+                             ay + (by - ay) * anteil,
+                             az + (bz - az) * anteil))
+    for s in flaechen:
+        mittel = s["chord"] * (1.0 + s["taper"]) / 2.0
+        seiten = (1, -1) if s["mirror"] else (1,)
+        for seite in seiten:
+            # Drei Stuecke je Haelfte: die Masse liegt aussen genauso wie
+            # innen, und genau davon lebt das Traegheitsmoment ums Rollen.
+            for anteil in (0.17, 0.5, 0.83):
+                laenge = s["length"] * anteil
+                y = s["y"] * seite + (0.0 if s["vertical"] else seite * laenge)
+                z = s["z"] + (laenge if s["vertical"] else 0.0)
+                struktur.append((mittel * s["length"] / 3.0 * mittel,
+                                 s["x"] - 0.4 * s["chord"], y, z))
+    summe_struktur = sum(v for v, _x, _y, _z in struktur)
+    rest = max(0.0, mass_kg - fest)
+    if summe_struktur > 0.0 and rest > 0.0:
+        for v, x, y, z in struktur:
+            zu(rest * v / summe_struktur, x, y, z)
+
+    gesamt = sum(m for m, _x, _y, _z in punkte)
+    if gesamt <= 0.0:
+        return None
+    cx = sum(m * x for m, x, _y, _z in punkte) / gesamt
+    cy = sum(m * y for m, _x, y, _z in punkte) / gesamt
+    cz = sum(m * z for m, _x, _y, z in punkte) / gesamt
+
+    ixx = iyy = izz = 0.0
+    for m, x, y, z in punkte:
+        dx, dy, dz = x - cx, y - cy, z - cz
+        ixx += m * (dy * dy + dz * dz)
+        iyy += m * (dx * dx + dz * dz)
+        izz += m * (dx * dx + dy * dy)
+    # Punktmassen allein unterschaetzen die Traegheit eines ausgedehnten
+    # Koerpers; ein Viertel Zuschlag ist die uebliche Korrektur.
+    return (cx, cy, cz), (ixx * 1.25, iyy * 1.25, izz * 1.25)
+
+def trimmen(flaechen, mass_kg, v_cru, rho=1.225):
+    """Das Leitwerk so einstellen, dass das Flugzeug im Reiseflug von selbst
+    geradeaus fliegt.
+
+    Das ist der Schritt, den YASim beim Laden rechnet und den ein
+    Geometriemodell braucht: Ohne ihn traegt der Fluegel vor dem
+    Schwerpunkt, niemand haelt dagegen, und das Flugzeug zieht die Nase
+    hoch, bis es ueberzieht -- im Versuch nach genau einer Sekunde.
+
+    Zwei Gleichungen, zwei Unbekannte: Die Auftriebe muessen das Gewicht
+    tragen, und ihre Momente um den Schwerpunkt muessen sich aufheben.
+    Daraus folgt, wieviel das Leitwerk tragen muss, und daraus sein
+    Einstellwinkel.
+    """
+    waagrecht = [s for s in flaechen if not s["vertical"]]
+    if len(waagrecht) < 2:
+        return
+    haupt = max(waagrecht, key=lambda s: s["length"] * s["chord"])
+    leitwerke = [s for s in waagrecht if s is not haupt]
+
+    def kennwerte(s):
+        mittel = s["chord"] * (1.0 + s["taper"]) / 2.0
+        spann = (2.0 * s["length"]) if s["mirror"] else s["length"]
+        flaeche = mittel * spann
+        streckung = max(1.0, spann / max(0.01, mittel))
+        anstieg = 2.0 * math.pi * streckung / (streckung + 2.0)
+        # Der Angriffspunkt liegt bei einem Viertel der Tiefe.
+        d = s["x"] - 0.25 * s["chord"]
+        return flaeche, anstieg, d
+
+    S_w, a_w, d_w = kennwerte(haupt)
+    S_t, a_t, d_t = 0.0, 0.0, 0.0
+    for s in leitwerke:
+        f, an, d = kennwerte(s)
+        S_t += f
+        a_t = an if a_t == 0.0 else (a_t + an) / 2.0
+        d_t += f * d
+    if S_t <= 0.0:
+        return
+    d_t /= S_t
+    if abs(d_t - d_w) < 0.05:
+        return
+
+    W = mass_kg * 9.80665
+    q = 0.5 * rho * v_cru * v_cru
+    if q < 1.0:
+        return
+    nenner = 1.0 - (d_w / d_t if abs(d_t) > 1e-6 else 0.0)
+    if abs(nenner) < 1e-6:
+        return
+    L_w = W / nenner
+    L_t = -L_w * d_w / d_t
+
+    # Anstellwinkel des Fluegels daraus, dann der des Leitwerks.
+    cl_w = L_w / (q * S_w)
+    alpha = cl_w / a_w - math.radians(haupt["incidence"]) - haupt["camber"]
+    cl_t = L_t / (q * S_t)
+    i_t = cl_t / a_t - alpha
+    for s in leitwerke:
+        s["incidence"] = math.degrees(i_t)
+    return math.degrees(alpha), math.degrees(i_t)
+
+def write_geometry(f, geo, mass_kg):
+    flaechen, beine, area, span, traegheit, quelle, abstand = geo
+    f.write("geometrie 1" + "\n")
+    if traegheit:
+        f.write("inertia %.0f %.0f %.0f" % traegheit + "\n")
+    for s in flaechen:
+        f.write(("flaeche %.3f %.3f %.3f %.3f %.3f %.3f %.2f %.2f %.2f %.2f "
+                 "%.3f %.1f %.1f %.2f %.2f %.2f %.2f %.2f %d %d" + "\n") %
+                (s["x"], s["y"], s["z"], s["chord"], s["length"], s["taper"],
+                 s["incidence"], s["twist"], s["dihedral"], s["sweep"],
+                 s["camber"], s["stall_aoa"], s["stall_width"], s["stall_peak"],
+                 s["flap"], s["aileron"], s["elevator"], s["rudder"],
+                 s["mirror"], s["vertical"]))
+    for b in beine:
+        # YASim gibt Feder und Daempfung als Faktoren; der Grundwert ergibt
+        # sich daraus, dass die Feder das Flugzeug auf dem Federweg traegt.
+        weg = max(0.05, b["compression"])
+        feder = b["spring"] * mass_kg * 9.80665 / weg
+        daempfer = b["damp"] * 0.5 * math.sqrt(feder * mass_kg)
+        f.write(("bein %.3f %.3f %.3f %.0f %.0f %.1f %.1f" + "\n") %
+                (b["x"], b["y"], b["z"], feder, daempfer, b["steer"], b["brake"]))
 
 def convert(target, out_path=None):
     aircraft_dir = target if os.path.isdir(target) else os.path.dirname(target)

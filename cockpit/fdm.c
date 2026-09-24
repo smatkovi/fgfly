@@ -63,10 +63,41 @@ static int read_table_line(struct fdm_table *t, const char *rest) {
 
 /* Das Dateiformat ist absichtlich Text: ein Schluessel je Zeile, Tabellen als
    Anzahl und dann Paare.  Ein Flugzeug sind rund 1000 Bytes. */
+/* Was der Renderer sehen soll, aus dem Geometriemodell heruebergereicht. */
+static void aus_blade(struct fdm_state *s, const struct blade_state *b) {
+    s->alt_m = b->alt_m;
+    s->ground_m = b->ground_m;
+    s->v_ms = b->v_ms;
+    s->vs_ms = b->vs_ms;
+    s->pitch_deg = b->pitch_deg;
+    s->roll_deg = b->roll_deg;
+    s->heading_deg = b->heading_deg;
+    s->alpha_deg = b->alpha_deg;
+    s->gamma_deg = b->v_ms > 1.0f ? asinf(b->vs_ms / b->v_ms) * 180.0f / (float)M_PI : 0.0f;
+    s->rpm = b->rpm;
+    s->on_ground = b->on_ground;
+    s->north_m = b->north_m;
+    s->east_m = b->east_m;
+}
+
+void fdm_place(struct fdm_state *s, const struct fdm_aircraft *a) {
+    if (!a->has_blade) return;
+    s->blade.ground_m = s->ground_m;
+    s->blade.north_m = s->north_m;
+    s->blade.east_m = s->east_m;
+    s->blade.heading_deg = s->heading_deg;
+    blade_place_on_ground(&s->blade, &a->blade);
+    aus_blade(s, &s->blade);
+}
+
 int fdm_load(struct fdm_aircraft *a, const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     fdm_default(a);
+    /* Steht eine Geometrie in der Datei, rechnet von hier an blade.c.  Die
+       Tabellen darunter werden trotzdem gelesen -- sie schaden nicht, und
+       eine Datei fuettert damit beide Modelle. */
+    a->has_blade = blade_load(&a->blade, path);
     snprintf(a->name, sizeof(a->name), "%s", "(unbenannt)");
     char line[4096];
     while (fgets(line, sizeof(line), f)) {
@@ -113,7 +144,12 @@ static float clampf(float v, float lo, float hi) {
 }
 
 void fdm_init(struct fdm_state *s, const struct fdm_aircraft *a) {
-    (void)a;
+    if (a->has_blade) {
+        memset(s, 0, sizeof(*s));
+        blade_init(&s->blade, &a->blade);
+        aus_blade(s, &s->blade);
+        return;
+    }
     s->alt_m = 0.0f;
     s->ground_m = 0.0f;
     s->v_ms = 0.0f;
@@ -132,6 +168,14 @@ void fdm_init(struct fdm_state *s, const struct fdm_aircraft *a) {
 void fdm_step(struct fdm_state *s, const struct fdm_aircraft *a, float dt,
               float stick_roll, float stick_pitch, float rudder, float throttle,
               float flaps, int brake, int gear_down) {
+    if (a->has_blade) {
+        s->blade.engine_on = s->engine_on;
+        s->blade.ground_m = s->ground_m;
+        blade_step(&s->blade, &a->blade, dt, stick_roll, stick_pitch, rudder,
+                   throttle, flaps, brake, gear_down);
+        aus_blade(s, &s->blade);
+        return;
+    }
     if (dt <= 0.0f) return;
     if (dt > 0.1f) dt = 0.1f;               /* ein Hacker im Bildtakt soll nicht sprengen */
 

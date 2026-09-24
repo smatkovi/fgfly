@@ -1065,6 +1065,11 @@ static void load_world(void) {
     } else {
         on_runway = nland > 0 ? start_on_runway(land[0].name) : 0;
     }
+    /* Jetzt stehen Boden, Ort und Kurs - also das Flugzeug daraufstellen.
+       Beim Geometriemodell ist alt_m die Hoehe des Schwerpunkts; ohne
+       diesen Schritt steckt das Fahrwerk im Boden und die Feder schiesst
+       das Flugzeug beim ersten Bild in die Luft. */
+    fdm_place(&fdm, acft);
     if (on_runway) ground = fdm.ground_m;
     if (start_airborne) {
         fdm.alt_m = ground + 600.0f;

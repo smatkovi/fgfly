@@ -12,6 +12,15 @@
 #ifndef FDM_H
 #define FDM_H
 
+/* Zwei Wege, ein Ergebnis.
+ *
+ * Bringt die Datei eine Geometrie mit (`geometrie 1`, aus einem
+ * YASim-Flugzeug), rechnet blade.c mit Flaechenstuecken, Kraeften und
+ * Momenten.  Bringt sie nur Beiwertetabellen mit (aus JSBSim), bleibt es
+ * beim einfachen Modell hier.  Der Renderer merkt davon nichts: er liest
+ * weiter dieselben Felder. */
+#include "blade.h"
+
 #define FDM_TABLE_MAX 40
 
 /* Stuetzstellen einer JSBSim-Tabelle, linear dazwischen, ausserhalb flach. */
@@ -22,6 +31,8 @@ struct fdm_table {
 };
 
 struct fdm_aircraft {
+    int has_blade;               /* 1 = Geometrie da, blade.c rechnet */
+    struct blade_aircraft blade;
     char name[32];
     float mass_kg;
     float wing_area_m2;
@@ -49,6 +60,7 @@ struct fdm_state {
     float vs_ms;            /* Steigen, aus v und gamma */
     float north_m, east_m;  /* Ort in der Kachel, oertlich gerechnet */
     int on_ground;
+    struct blade_state blade;    /* nur benutzt, wenn has_blade */
 };
 
 void fdm_default(struct fdm_aircraft *a);              /* eingebaute Cessna 172 */
@@ -56,6 +68,10 @@ int fdm_load(struct fdm_aircraft *a, const char *path); /* 1 = gelesen */
 float fdm_lookup(const struct fdm_table *t, float x);
 
 void fdm_init(struct fdm_state *s, const struct fdm_aircraft *a);
+/* Nachdem Boden, Ort und Kurs gesetzt sind: das Flugzeug auf die Raeder
+   stellen.  Beim Geometriemodell ist alt_m die Hoehe des Schwerpunkts, und
+   die liegt ueber dem Boden -- sonst steckt das Fahrwerk drin. */
+void fdm_place(struct fdm_state *s, const struct fdm_aircraft *a);
 
 /* stick_roll und stick_pitch sind -1..1, throttle und flaps 0..1. */
 void fdm_step(struct fdm_state *s, const struct fdm_aircraft *a, float dt,
