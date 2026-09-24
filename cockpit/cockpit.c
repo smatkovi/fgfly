@@ -16,8 +16,9 @@
  * Umgebung:
  *   COCKPIT_SHOT=<datei>   legt ein Bild als PPM ab (glReadPixels)
  *   COCKPIT_SHOT_FRAME=N   welches Bild (Vorgabe 60)
- *   COCKPIT_AXES=rx,ry     welche Beschleunigungsachsen Rollen und Nicken
- *                          geben, mit Vorzeichen (Vorgabe 0,1 = x und y)
+ *   COCKPIT_AXES=r,p       welche Sensorachse quer zum Bild liegt und
+ *                          welche laengs, mit Vorzeichen (Vorgabe 1,0).
+ *                          Rollt es verkehrt herum, hilft -1,0.
  *   COCKPIT_NOSENSOR=1     Sensor nicht lesen (fuer einen Lauf ohne Bewegung)
  *   COCKPIT_EDGE=px        wie breit der Rand ist, der dem Randwisch des
  *                          Fenstermanagers gehoert (Vorgabe 12, 0 = aus)
@@ -72,6 +73,13 @@ static int brake = 1, view_mode = 0, gear_down = 1;
 static float rudder;                    /* -1 links, +1 rechts, federt zurueck */
 static int quit_now;
 static float tilt_roll, tilt_pitch;          /* was der Sensor meldet */
+/* Die Nulllage: wie das Geraet gehalten wurde, als der Flug begann.  Ohne
+   sie muesste man waagrecht halten, um geradeaus zu fliegen, und saehe
+   dabei auf den Schirm wie auf einen Tisch.  X-Plane laesst deshalb
+   ebenfalls neu einnorden; hier heisst der Knopf NEUTRAL. */
+static float tilt_ref_roll, tilt_ref_pitch;
+static int tilt_have_ref;
+static float stick_from_tilt(float tilt_deg);   /* die Anzeige braucht ihn frueh */
 static struct terrain model;
 static int have_model;
 
@@ -201,26 +209,45 @@ static void horizon_quad(float u0, float v0, float u1, float v1,
     push(px[0], py[0], c); push(px[2], py[2], c); push(px[3], py[3], c);
 }
 
-static int read_accel(float *roll, float *pitch) {
+/* Der Sensor meldet die Erdbeschleunigung in den Achsen des Geraets, nicht
+   in denen des Bildes.  Welche wohin zeigt, ist nachgemessen und nicht
+   geraten: Kippt man das Geraet so, wie man es beim Halten tut, bleibt die
+   mittlere Zahl stehen, waehrend die erste und die dritte tauschen.  Also
+   liegt Achse 1 quer zum Bild (nach rechts), Achse 0 laengs (nach unten)
+   und Achse 2 senkrecht auf dem Schirm.
+
+   Vorher stand hier Achse 0 fuer das Rollen.  Das ist genau die Achse, die
+   beim Halten fast voll ausschlaegt: Der Knueppel hing damit staendig am
+   Anschlag, und im Protokoll drehte sich das Flugzeug zwischen 36 und 70
+   Grad Querlage, ohne dass ein Kippen etwas geaendert haette. */
+static int read_accel_raw(float g[3]) {
     FILE *f = fopen(ACCEL_PATH, "r");
     if (!f) return 0;
     int a[3] = {0, 0, 0};
     int got = fscanf(f, "(%d,%d,%d)", &a[0], &a[1], &a[2]);
     fclose(f);
     if (got != 3) return 0;
-
-    int ri = 0, pi = 1;
+    /* COCKPIT_AXES=r,p vertauscht die Achsen, falls ein Geraet sie anders
+       legt; negativ dreht die Richtung um. */
+    int ri = 1, pi = 0;
     const char *axes = getenv("COCKPIT_AXES");
     if (axes) sscanf(axes, "%d,%d", &ri, &pi);
-    float rv = a[ri < 0 ? -ri : ri] * (ri < 0 ? -1.0f : 1.0f);
-    float pv = a[pi < 0 ? -pi : pi] * (pi < 0 ? -1.0f : 1.0f);
-    *roll = rv / 1000.0f * 90.0f;
-    *pitch = pv / 1000.0f * 90.0f;
-    if (*roll > 90.0f) *roll = 90.0f;
-    if (*roll < -90.0f) *roll = -90.0f;
-    if (*pitch > 90.0f) *pitch = 90.0f;
-    if (*pitch < -90.0f) *pitch = -90.0f;
+    int ni = 3 - (ri < 0 ? -ri : ri) - (pi < 0 ? -pi : pi);
+    if (ni < 0 || ni > 2) ni = 2;
+    g[0] = a[ri < 0 ? -ri : ri] * (ri < 0 ? -1.0f : 1.0f);   /* quer   */
+    g[1] = a[pi < 0 ? -pi : pi] * (pi < 0 ? -1.0f : 1.0f);   /* laengs */
+    g[2] = (float)a[ni];                                     /* senkrecht */
     return 1;
+}
+
+/* Aus der Schwerkraft zwei Winkel: wie weit das Bild zur Seite gekippt ist
+   (Rollen) und wie weit nach hinten (Nicken).  Gerechnet wird mit allen
+   drei Achsen, nicht mit einer allein - sonst haengt der Ausschlag davon
+   ab, wie steil man das Geraet ueberhaupt haelt. */
+static void tilt_angles(const float g[3], float *roll, float *pitch) {
+    const float DEG = 57.29577951f;
+    *roll  = atan2f(g[0], sqrtf(g[1] * g[1] + g[2] * g[2])) * DEG;
+    *pitch = atan2f(g[2], sqrtf(g[0] * g[0] + g[1] * g[1])) * DEG;
 }
 
 /* Sieben-Segment-Ziffern: eine Ziffer sind hoechstens sieben Rechtecke, also
@@ -520,6 +547,25 @@ static void build_frame(void) {
     rect_ui(0.31f, 0.03f, 0.13f, 0.08f, fdm.engine_on ? dim : green);
     text_ui(0.325f, 0.048f, 0.045f, fdm.engine_on ? "STOP" : "START",
             fdm.engine_on ? white : black);
+
+    /* Einnorden: Die Lage, in der das Geraet gerade gehalten wird, wird zur
+       Nulllage des Knueppels.  Ohne das muesste man waagrecht halten, um
+       geradeaus zu fliegen, und saehe auf den Schirm wie auf einen Tisch. */
+    rect_ui(0.47f, 0.03f, 0.13f, 0.08f, dim);
+    text_ui(0.482f, 0.048f, 0.045f, "MITTE", white);
+
+    /* Und daneben, was das Neigen gerade sagt: ein Punkt in einem Feld,
+       wie der Knueppel im Cockpit.  Ohne das sieht man dem Bild nicht an,
+       ob der Sensor ueberhaupt ankommt - und schon gar nicht, ob er
+       seitenverkehrt ankommt. */
+    {
+        float bx = 0.615f, by = 0.03f, bw = 0.075f, bh = 0.08f;
+        rect_ui(bx, by, bw, bh, track);
+        float sr = stick_from_tilt(tilt_roll), sp = stick_from_tilt(tilt_pitch);
+        rect_ui(bx + bw * 0.5f - 0.006f + sr * bw * 0.36f,
+                by + bh * 0.5f - 0.010f - sp * bh * 0.36f,
+                0.012f, 0.020f, knob);
+    }
 
     /* Seitenruder: waagrecht unten, federt in die Mitte zurueck.  Am Boden
        lenkt es das Bugrad, in der Luft giert es. */
@@ -1427,6 +1473,10 @@ static void touch_start(float x, float y) {
 static void start_flight(void) {
     load_world();
     screen_start = 0;
+    /* Wie das Geraet jetzt gehalten wird, ist geradeaus.  Beim naechsten
+       Bild nimmt der Sensor die Lage als Null. */
+    tilt_have_ref = 0;
+    tilt_roll = tilt_pitch = 0.0f;
 }
 
 /* `first` ist 1, wenn der Finger in diesem Bild aufgesetzt hat.  Die Schalter
@@ -1443,6 +1493,7 @@ static int on_widget(float x, float y) {
     if (y < 0.115f && x > 0.90f) return 1;                  /* das Kreuz */
     if (y < 0.13f && x > 0.12f && x < 0.30f) return 1;      /* Ansicht */
     if (y < 0.13f && x > 0.30f && x < 0.46f) return 1;      /* Anlasser */
+    if (y < 0.13f && x > 0.47f && x < 0.61f) return 1;      /* Mitte setzen */
     if (x < 0.16f && y > 0.13f && y < 0.87f) return 1;      /* Schubhebel */
     if (x > 0.84f && y > 0.13f && y < 0.87f) return 1;      /* Klappen */
     if (y > 0.85f && x < 0.20f) return 1;                   /* Fahrwerk */
@@ -1469,6 +1520,10 @@ static void touch(int px, int py, int width, int height, int first) {
     }
     else if (y < 0.13f && x > 0.30f && x < 0.46f) {
         if (first) fdm.engine_on = !fdm.engine_on;
+    }
+    else if (y < 0.13f && x > 0.47f && x < 0.61f) {
+        /* MITTE: die jetzige Haltung wird die Nulllage. */
+        if (first) { tilt_have_ref = 0; tilt_roll = tilt_pitch = 0.0f; }
     }
     if (throttle < 0.0f) throttle = 0.0f;
     if (throttle > 1.0f) throttle = 1.0f;
@@ -1908,7 +1963,26 @@ int main(int argc, char **argv) {
                 page = browse_mode ? S_LIST : S_RWY;
             }
         }
-        if (!no_sensor && !screen_start) read_accel(&tilt_roll, &tilt_pitch);
+        if (!no_sensor && !screen_start) {
+            float g[3];
+            if (read_accel_raw(g)) {
+                float r, p;
+                tilt_angles(g, &r, &p);
+                if (!tilt_have_ref) {
+                    tilt_ref_roll = r;
+                    tilt_ref_pitch = p;
+                    tilt_have_ref = 1;
+                }
+                /* Weich nachziehen: der Sensor rauscht um ein, zwei Grad,
+                   und ein zitternder Knueppel sieht aus wie ein Fehler. */
+                /* Nach hinten kippen heisst ziehen, also Nase hoch - das
+                   ist das Vorzeichen, das ein Knueppel auch haette. */
+                float zr = r - tilt_ref_roll, zp = -(p - tilt_ref_pitch);
+                float k = 0.25f;
+                tilt_roll += (zr - tilt_roll) * k;
+                tilt_pitch += (zp - tilt_pitch) * k;
+            }
+        }
         double t_now = now_s();
         float dt = (float)(t_now - t_prev);
         t_prev = t_now;
@@ -1916,6 +1990,10 @@ int main(int argc, char **argv) {
         /* Bedienelemente wie bei X-Plane: unsichtbar, bis jemand den Schirm
            anfasst, dann zweieinhalb Sekunden durchscheinend zu sehen und
            danach in einer Sekunde wieder weg.  Im Menue sind sie immer da. */
+        /* Beim ersten Bild eines Fluges die Bedienung einmal zeigen: Wer
+           gerade aus dem Menue kommt, soll sehen, was da ist - danach
+           verschwindet sie wie bei X-Plane von selbst. */
+        if (!screen_start && ui_touch_time < -50.0) ui_touch_time = t_now;
         if (touch_now.n > 0 || dragging) ui_touch_time = t_now;
         {
             double idle = t_now - ui_touch_time;
@@ -2091,8 +2169,11 @@ int main(int argc, char **argv) {
                ist aus der Ferne nicht zu sehen, ob eine Geste ankommt. */
             if (getenv("COCKPIT_DEBUG"))
                 printf("      Sicht %d  Geste %d  Finger %d  Kreisen %+6.1f/%+5.1f  "
-                       "Abstand %.0f m\n",
-                       view_mode, gesture, touch_now.n, orbit_az, orbit_el, chase_m);
+                       "Abstand %.0f m  Neigen %+5.1f/%+5.1f -> Knueppel "
+                       "%+4.2f/%+4.2f\n",
+                       view_mode, gesture, touch_now.n, orbit_az, orbit_el, chase_m,
+                       tilt_roll, tilt_pitch,
+                       stick_from_tilt(tilt_roll), stick_from_tilt(tilt_pitch));
             last = t;
             frames_at_last = frames;
         }
