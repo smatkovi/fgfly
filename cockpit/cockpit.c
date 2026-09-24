@@ -1581,12 +1581,21 @@ int main(int argc, char **argv) {
         EGL_DEPTH_SIZE, 16,
         EGL_NONE
     };
-    EGLConfig cfg;
+    EGLConfig cfgs[32], cfg = NULL;
     EGLint ncfg = 0;
-    if (!eglChooseConfig(dpy, cfg_attr, &cfg, 1, &ncfg) || ncfg < 1) {
+    if (!eglChooseConfig(dpy, cfg_attr, cfgs, 32, &ncfg) || ncfg < 1) {
         fprintf(stderr, "keine ES2-Fensterkonfiguration: %#x\n", eglGetError());
         return 1;
     }
+    /* Ohne Alphakanal, wenn es eine gibt.  Mit Alpha mischt der
+       Fenstermanager das Fenster mit dem, was dahinter liegt -- und dann
+       schien beim Schub- und Klappenschieber der Desktop durch. */
+    for (int i = 0; i < ncfg && !cfg; ++i) {
+        EGLint asize = 0;
+        eglGetConfigAttrib(dpy, cfgs[i], EGL_ALPHA_SIZE, &asize);
+        if (asize == 0) cfg = cfgs[i];
+    }
+    if (!cfg) cfg = cfgs[0];
     EGLint native_id = 0;
     eglGetConfigAttrib(dpy, cfg, EGL_NATIVE_VISUAL_ID, &native_id);
 
@@ -2144,7 +2153,10 @@ int main(int argc, char **argv) {
             glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(struct vertex), &verts[0].x);
             glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(struct vertex), &verts[0].r);
             glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            /* Farbe mischen, Alpha stehen lassen: sonst wird das Fenster
+               dort durchsichtig, wo die Bedienung liegt. */
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                                GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
             glDrawArrays(GL_TRIANGLES, 0, nverts);
             glDisable(GL_BLEND);
         }
