@@ -69,6 +69,7 @@ struct blade_aircraft {
     int jet;
     float power_w;              /* Wellenleistung, falls Propeller */
     float prop_r;               /* Propellerhalbmesser, m */
+    float reise_ms;            /* Reisegeschwindigkeit, zum Trimmen */
     float cd_body;              /* Rumpfwiderstand, auf die Fluegelflaeche bezogen */
     float wing_area_m2;         /* nur fuer Anzeige und Rumpfwiderstand */
     float wing_span_m;

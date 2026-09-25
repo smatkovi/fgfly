@@ -160,13 +160,20 @@ static void segment(struct kraft *k, const struct blade_surface *sf, int side,
        mit Pfeilung nach hinten und V-Stellung nach oben. */
     float span = sf->length * frac;
     float dih = sf->dihedral_deg * DEG, swp = sf->sweep_deg * DEG;
+    /* Der Auftrieb greift am **Viertelpunkt** an, nicht an der Vorderkante.
+       Das ist keine Feinheit: Bei der AG-14 sind das 40 cm, und sie
+       entscheiden darueber, ob der Fluegel vor oder hinter dem Schwerpunkt
+       zieht.  Der Umsetzer rechnete den Neutralpunkt richtig mit t/4, das
+       Modell zog aber an der Nase -- beide waren sich uneinig, und das
+       Flugzeug taumelte, obwohl die Rechnung "stabil" sagte. */
+    float viertel = 0.25f * chord;
     float rx, ry, rz;
     if (sf->vertical) {
-        rx = sf->x - span * sinf(swp);
+        rx = sf->x - viertel - span * sinf(swp);
         ry = sf->y;
         rz = sf->z - span * cosf(swp);        /* z zeigt nach unten */
     } else {
-        rx = sf->x - span * sinf(swp);
+        rx = sf->x - viertel - span * sinf(swp);
         ry = sf->y * side + side * span * cosf(dih);
         rz = sf->z - span * sinf(dih);
     }
@@ -233,6 +240,85 @@ static void segment(struct kraft *k, const struct blade_surface *sf, int side,
                  L * lift_z + D * drag_z, rx, ry, rz);
 }
 
+/* Alle Flaechen, Stueck fuer Stueck.  Steht fuer sich, weil das Trimmen
+   dieselbe Rechnung braucht -- ein Trimmpunkt, der mit einer *anderen*
+   Formel gesucht wird als der, mit der spaeter geflogen wird, ist keiner. */
+static void flaechenkraefte(struct kraft *k, const struct blade_aircraft *a,
+                            float rho, float u, float v, float w,
+                            float p, float q, float r,
+                            float ail, float elev, float rud, float flap) {
+    for (int i = 0; i < a->nsurf; ++i) {
+        const struct blade_surface *sf = &a->surf[i];
+        int sides = sf->mirror ? 2 : 1;
+        for (int sd = 0; sd < sides; ++sd) {
+            int side = sd ? -1 : 1;
+            if (sf->vertical) side = 1;
+            for (int seg = 0; seg < BLADE_MAX_SEG; ++seg) {
+                float frac = (seg + 0.5f) / BLADE_MAX_SEG;
+                segment(k, sf, side, frac, 1.0f / BLADE_MAX_SEG, rho,
+                        u, v, w, p, q, r, ail, elev, rud, flap);
+            }
+        }
+    }
+}
+
+/* Das Flugzeug sich selbst trimmen lassen.
+ *
+ * Gesucht sind zwei Zahlen: der Anstellwinkel, bei dem der Auftrieb das
+ * Gewicht traegt, und der Einstellwinkel des Leitwerks, bei dem sich die
+ * Momente aufheben.  Beide haengen voneinander ab, also abwechselnd
+ * nachziehen, bis sich nichts mehr aendert.
+ *
+ * Warum nicht beim Umsetzen, in Python?  Weil dort mit einer vereinfachten
+ * Formel gerechnet wuerde -- ohne Schraenkung, ohne den Widerstand der
+ * Flaechen ueber und unter dem Schwerpunkt.  Der Trimmpunkt kam dann auf
+ * dem Papier heraus und im Flug nicht: die AG-14 hatte ueberall ein
+ * nasenlastiges Moment und stuerzte, obwohl die Rechnung "stabil" sagte.
+ */
+static void blade_trim(struct blade_aircraft *a, float v_ms) {
+    if (v_ms < 5.0f) v_ms = 45.0f;
+    /* Welche Flaeche trimmt?  Die mit dem Hoehenruder -- das ist die Frage,
+       die die Datei selbst beantwortet.  Nach Groesse zu gehen ging schief:
+       Der Long-EZ hat drei waagrechte Flaechen, die groesste ist seine
+       Strake, und der Trimmer verstellte daraufhin den Hauptfluegel. */
+    int getrimmt = 0;
+    float x_mittel = 0.0f;
+    for (int i = 0; i < a->nsurf; ++i)
+        if (!a->surf[i].vertical && a->surf[i].elevator != 0.0f) {
+            ++getrimmt;
+            x_mittel += a->surf[i].x;
+        }
+    if (!getrimmt) return;
+    x_mittel /= getrimmt;
+    /* Und in welche Richtung wirkt ein groesserer Einstellwinkel?  Hinter
+       dem Schwerpunkt drueckt er die Nase, davor hebt er sie.  Ohne dieses
+       Vorzeichen lief der Trimmer beim Long-EZ in die Begrenzung: Er nahm
+       dem Vorfluegel genau den Auftrieb weg, den er zum Anheben gebraucht
+       haette. */
+    float richtung = x_mittel > 0.0f ? -1.0f : 1.0f;
+
+    float rho = blade_density(0.0f);
+    float gewicht = a->mass_kg * G;
+    float alpha = 2.0f * DEG, i_leit = 0.0f;
+    for (int runde = 0; runde < 60; ++runde) {
+        float u = v_ms * cosf(alpha), w = v_ms * sinf(alpha);
+        struct kraft k = {0, 0, 0, 0, 0, 0};
+        flaechenkraefte(&k, a, rho, u, 0, w, 0, 0, 0, 0, 0, 0, 0);
+        /* Auftrieb ist die Kraft nach oben, also gegen z. */
+        float auftrieb = -(k.fz * cosf(alpha) - k.fx * sinf(alpha));
+        float fehl_auftrieb = (auftrieb - gewicht) / gewicht;
+        float fehl_moment = k.my / (gewicht * 2.0f);
+        alpha -= fehl_auftrieb * 0.08f;
+        i_leit += richtung * fehl_moment * 0.05f;
+        alpha = clampf(alpha, -10.0f * DEG, 14.0f * DEG);
+        i_leit = clampf(i_leit, -15.0f * DEG, 15.0f * DEG);
+        for (int i = 0; i < a->nsurf; ++i)
+            if (!a->surf[i].vertical && a->surf[i].elevator != 0.0f)
+                a->surf[i].incidence_deg = i_leit * RAD;
+        if (fabsf(fehl_auftrieb) < 0.002f && fabsf(fehl_moment) < 0.002f) break;
+    }
+}
+
 void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
                 float stick_roll, float stick_pitch, float rudder, float throttle,
                 float flaps, int brake, int gear_down) {
@@ -245,22 +331,8 @@ void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
 
     float rho = blade_density(s->alt_m);
     struct kraft k = {0, 0, 0, 0, 0, 0};
-
-    /* Die Flaechen, Stueck fuer Stueck. */
-    for (int i = 0; i < a->nsurf; ++i) {
-        const struct blade_surface *sf = &a->surf[i];
-        int sides = sf->mirror ? 2 : 1;
-        for (int sd = 0; sd < sides; ++sd) {
-            int side = sd ? -1 : 1;
-            if (sf->vertical) side = 1;
-            for (int seg = 0; seg < BLADE_MAX_SEG; ++seg) {
-                float frac = (seg + 0.5f) / BLADE_MAX_SEG;
-                segment(&k, sf, side, frac, 1.0f / BLADE_MAX_SEG, rho,
-                        s->u, s->v, s->w, s->p, s->q, s->r,
-                        stick_roll, stick_pitch, rudder, flaps);
-            }
-        }
-    }
+    flaechenkraefte(&k, a, rho, s->u, s->v, s->w, s->p, s->q, s->r,
+                    stick_roll, stick_pitch, rudder, flaps);
 
     /* Rumpf: nur Widerstand, aber der bremst die Schraeganstroemung mit. */
     {
@@ -379,6 +451,8 @@ void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
 
     /* Und wenn doch etwas entgleist ist: anhalten statt Unsinn rechnen.
        Ein Flugmodell, das NaN ausgibt, reisst den ganzen Renderer mit. */
+    if (s->alt_m > s->ground_m + 30000.0f) s->alt_m = s->ground_m + 30000.0f;
+    if (s->alt_m < s->ground_m - 1000.0f) s->alt_m = s->ground_m - 1000.0f;
     if (!isfinite(s->u) || !isfinite(s->w) || !isfinite(s->p) ||
         !isfinite(s->q) || !isfinite(s->alt_m) || !isfinite(s->roll_deg)) {
         s->u = s->v = s->w = 0.0f;
@@ -445,6 +519,7 @@ int blade_load(struct blade_aircraft *a, const char *path) {
         else if (!strcmp(key, "cd_body")) sscanf(rest, "%f", &a->cd_body);
         else if (!strcmp(key, "leistung_w")) sscanf(rest, "%f", &a->power_w);
         else if (!strcmp(key, "propeller_r")) sscanf(rest, "%f", &a->prop_r);
+        else if (!strcmp(key, "reise_ms")) sscanf(rest, "%f", &a->reise_ms);
         else if (!strcmp(key, "flaeche") && a->nsurf < BLADE_MAX_SURF) {
             struct blade_surface *s = &a->surf[a->nsurf];
             int n = sscanf(rest, "%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d",
@@ -483,5 +558,6 @@ int blade_load(struct blade_aircraft *a, const char *path) {
         a->iyy = a->mass_kg * (0.30f * len) * (0.30f * len);
         a->izz = a->ixx + a->iyy;
     }
+    blade_trim(a, a->reise_ms);
     return 1;
 }

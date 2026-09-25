@@ -178,6 +178,12 @@ def engine_data(aircraft_dir, root):
         m = re.search(r"power:\s*([\d.]+)\s*hp", text, re.I)
         if m:
             hp = max(hp, float(m.group(1)))
+        # JSBSim schreibt die Leistung eines Kolbenmotors als <maxhp>.  Ohne
+        # sie bekam die Cessna den Vorgabeschub und brauchte 43 Sekunden bis
+        # zum Abheben.
+        m = re.search(r"<maxhp>\s*([\d.]+)", text, re.I)
+        if m:
+            hp = max(hp, float(m.group(1)))
         m = re.search(r"<maxrpm>\s*([\d.]+)", text)
         if m:
             rpm_max = float(m.group(1))
@@ -317,6 +323,7 @@ def convert_yasim(path, out_path):
             if hp > 0.0:
                 f.write("leistung_w %.0f\n" % (hp * 745.7))
                 f.write("propeller_r %.2f\n" % (radius if radius > 0.1 else 0.9))
+            f.write("reise_ms %.1f\n" % v_cru)
 
     print("%s (YASim) -> %s (%d Bytes)" % (name, out_path, os.path.getsize(out_path)))
     print("  Masse %.0f kg, Flaeche %.1f m2, Streckung %.1f, %.0f PS" %
@@ -520,6 +527,154 @@ def yasim_geometry(root, mass_kg=0.0):
 
 
 
+
+# ---------------------------------------------------------------------------
+# Dasselbe aus JSBSim.  Dort steht die Aerodynamik zwar als Beiwertetabelle
+# und nicht als Geometrie -- aber die **Abmessungen** stehen vollstaendig da,
+# und zwar genauer als bei YASim: Fluegelflaeche, Spannweite, Tiefe,
+# Leitwerksflaechen mit ihren Hebelarmen, die Traegheitsmomente als Zahl und
+# der Schwerpunkt als Ort.  Daraus laesst sich dieselbe Flaechenaufteilung
+# bauen, mit der das Blattelementverfahren rechnet.
+#
+# Achsen: JSBSim misst im Rumpfgeruest in Zoll, x nach **hinten**, y nach
+# rechts, z nach oben.  Das Flugmodell misst in Metern vom Schwerpunkt aus,
+# x nach vorn und z nach unten -- also zweimal das Vorzeichen drehen.
+
+FT = 0.3048
+IN = 0.0254
+SLUGFT2 = 1.355818
+LBS_PER_FT = 14.5939          # Federrate: lbs/ft -> N/m
+
+
+def _wert(root, pfad, default=0.0, faktor=1.0):
+    node = root.find(pfad)
+    if node is None or not (node.text or "").strip():
+        return default
+    try:
+        return float(node.text.strip()) * faktor
+    except ValueError:
+        return default
+
+
+def _ort(node, cg):
+    """Ein <location> in Zoll -> Meter im Rumpfsystem, vom Schwerpunkt aus."""
+    if node is None:
+        return 0.0, 0.0, 0.0
+    einheit = node.get("unit", "IN")
+    f = IN if einheit.upper() == "IN" else (FT if einheit.upper() == "FT" else 1.0)
+    x = _wert(node, "x", 0.0) * f
+    y = _wert(node, "y", 0.0) * f
+    z = _wert(node, "z", 0.0) * f
+    # x zeigt bei JSBSim nach hinten, z nach oben.
+    return (cg[0] - x), (y - cg[1]), (cg[2] - z)
+
+
+def jsbsim_geometry(root, stall_deg=16.0):
+    metrics = root.find("metrics")
+    massb = root.find("mass_balance")
+    if metrics is None:
+        return None
+
+    einheit_flaeche = metrics.find("wingarea")
+    def mass(name, default=0.0):
+        node = metrics.find(name)
+        if node is None or not (node.text or "").strip():
+            return default
+        e = (node.get("unit") or "").upper()
+        v = float(node.text.strip())
+        if e == "FT2":
+            return v * FT * FT
+        if e == "FT":
+            return v * FT
+        if e == "IN":
+            return v * IN
+        return v
+
+    S_w = mass("wingarea")
+    b_w = mass("wingspan")
+    c_w = mass("chord")
+    S_h = mass("htailarea")
+    l_h = mass("htailarm")
+    S_v = mass("vtailarea")
+    l_v = mass("vtailarm") or l_h
+    if S_w <= 0.0 or b_w <= 0.0:
+        return None
+    if c_w <= 0.0:
+        c_w = S_w / b_w
+
+    cg = (0.0, 0.0, 0.0)
+    if massb is not None:
+        for loc in massb.findall("location"):
+            if loc.get("name", "").upper() == "CG":
+                e = (loc.get("unit") or "IN").upper()
+                f = IN if e == "IN" else (FT if e == "FT" else 1.0)
+                cg = (_wert(loc, "x") * f, _wert(loc, "y") * f, _wert(loc, "z") * f)
+
+    # Der Bezugspunkt der Aerodynamik ist der Viertelpunkt des Fluegels.
+    aerorp = None
+    for loc in metrics.findall("location"):
+        if loc.get("name", "").upper() == "AERORP":
+            aerorp = loc
+    x_ac, y_ac, z_ac = _ort(aerorp, cg) if aerorp is not None else (0.0, 0.0, 0.0)
+
+    flaechen = []
+
+    def dazu(x, y, z, chord, length, taper, vertical, mirror,
+             flap=0.0, ail=0.0, elev=0.0, rud=0.0, incidence=0.0, aoa=None):
+        flaechen.append({
+            "tag": "jsb", "x": x, "y": y, "z": z, "chord": chord,
+            "length": length, "taper": taper, "incidence": incidence,
+            "twist": 0.0, "dihedral": 0.0, "sweep": 0.0, "camber": 0.0,
+            "stall_aoa": aoa if aoa is not None else stall_deg,
+            "stall_width": 4.0, "stall_peak": 1.4,
+            "flap": flap, "aileron": ail, "elevator": elev, "rudder": rud,
+            "mirror": mirror, "vertical": vertical,
+        })
+
+    # Fluegel: die Wurzel liegt eine Vierteltiefe vor dem Bezugspunkt.
+    dazu(x_ac + 0.25 * c_w, 0.0, z_ac, c_w, b_w / 2.0, 1.0, 0, 1,
+         flap=0.25, ail=0.20, incidence=_wert(metrics, "wing_incidence", 1.0))
+    # Hoehenleitwerk: Flaeche und Hebelarm sind gegeben, die Form nicht --
+    # Streckung 4 ist fuer ein Hoehenleitwerk das Uebliche.
+    if S_h > 0.0 and l_h > 0.0:
+        b_h = math.sqrt(S_h * 4.0)
+        dazu(x_ac - l_h + 0.25 * (S_h / b_h), 0.0, z_ac, S_h / b_h, b_h / 2.0,
+             1.0, 0, 1, elev=0.30)
+    # Seitenleitwerk: Streckung 1,5, steht auf dem Rumpf.
+    if S_v > 0.0 and l_v > 0.0:
+        b_v = math.sqrt(S_v * 1.5)
+        dazu(x_ac - l_v + 0.25 * (S_v / b_v), 0.0, z_ac - 0.3, S_v / b_v, b_v,
+             1.0, 1, 0, rud=0.30)
+
+    # Fahrwerk aus den Kontaktpunkten -- die stehen in JSBSim genauer da als
+    # in YASim: Federrate und Daempfung in Pfund je Fuss.
+    beine = []
+    gr = root.find("ground_reactions")
+    if gr is not None:
+        for c in gr.findall("contact"):
+            if (c.get("type") or "").upper() != "BOGEY":
+                continue
+            x, y, z = _ort(c.find("location"), cg)
+            feder = _wert(c, "spring_coeff", 60000.0 / LBS_PER_FT) * LBS_PER_FT
+            daempf = _wert(c, "damping_coeff", 4000.0 / LBS_PER_FT) * LBS_PER_FT
+            lenkbar = 1.0 if _wert(c, "max_steer", 0.0) > 0.5 else 0.0
+            bg = c.find("brake_group")
+            gebremst = 1.0 if (bg is not None and (bg.text or "").strip().upper()
+                               not in ("NONE", "")) else 0.0
+            beine.append({"x": x, "y": y, "z": z, "spring": feder,
+                          "damp": daempf, "steer": lenkbar, "brake": gebremst})
+
+    # Traegheit steht als Zahl da -- kein Schaetzen noetig.
+    traegheit = None
+    if massb is not None:
+        ixx = _wert(massb, "ixx", 0.0) * SLUGFT2
+        iyy = _wert(massb, "iyy", 0.0) * SLUGFT2
+        izz = _wert(massb, "izz", 0.0) * SLUGFT2
+        if ixx > 0.0 and iyy > 0.0 and izz > 0.0:
+            traegheit = (ixx, iyy, izz)
+
+    return flaechen, beine, S_w, b_w, traegheit, "JSBSim-Abmessungen", -0.1
+
 def massenpunkte(root, flaechen, mass_kg):
     """Der Schwerpunkt aus der Masseverteilung, nicht aus einer Faustregel.
 
@@ -699,11 +854,18 @@ def write_geometry(f, geo, mass_kg):
                  s["flap"], s["aileron"], s["elevator"], s["rudder"],
                  s["mirror"], s["vertical"]))
     for b in beine:
-        # YASim gibt Feder und Daempfung als Faktoren; der Grundwert ergibt
-        # sich daraus, dass die Feder das Flugzeug auf dem Federweg traegt.
-        weg = max(0.05, b["compression"])
-        feder = b["spring"] * mass_kg * 9.80665 / weg
-        daempfer = b["damp"] * 0.5 * math.sqrt(feder * mass_kg)
+        if "compression" in b:
+            # YASim gibt Feder und Daempfung als Faktoren; der Grundwert
+            # ergibt sich daraus, dass die Feder das Flugzeug auf dem
+            # Federweg traegt.
+            weg = max(0.05, b["compression"])
+            feder = b["spring"] * mass_kg * 9.80665 / weg
+            daempfer = b["damp"] * 0.5 * math.sqrt(feder * mass_kg)
+        else:
+            # JSBSim nennt beide als Zahl, in Pfund je Fuss -- schon
+            # umgerechnet.
+            feder = b["spring"]
+            daempfer = b["damp"]
         f.write(("bein %.3f %.3f %.3f %.0f %.0f %.1f %.1f" + "\n") %
                 (b["x"], b["y"], b["z"], feder, daempfer, b["steer"], b["brake"]))
 
@@ -772,8 +934,29 @@ def convert(target, out_path=None):
         write_table(f, "cd_alpha", [(a * 180.0 / 3.14159265, v) for a, v in cd_alpha])
         write_table(f, "cl_flap", cl_flap)
         write_table(f, "cd_flap", cd_flap)
+        # Und die Geometrie aus den Abmessungen, damit auch JSBSim-Flugzeuge
+        # mit Flaechenstuecken gerechnet werden koennen.  Der Abrisswinkel
+        # kommt aus der Tabelle selbst: dort, wo der Auftrieb am groessten
+        # ist.
+        abriss = 16.0
+        if cl_alpha:
+            hoch = max(cl_alpha, key=lambda ab: ab[1])
+            abriss = abs(hoch[0] * 180.0 / 3.14159265)
+            if not 5.0 < abriss < 30.0:
+                abriss = 16.0
+        jgeo = jsbsim_geometry(root, abriss)
+        if jgeo:
+            write_geometry(f, jgeo, mass_lb * LB_TO_KG)
+            f.write("reise_ms %.1f\n" % 60.0)
+            if not thrust_n and hp > 0.0:
+                f.write("leistung_w %.0f\n" % (hp * 745.7))
+                f.write("propeller_r 0.95\n")
 
     print("%s -> %s (%d Bytes)" % (name, out, os.path.getsize(out)))
+    if jgeo:
+        print("  Geometrie aus den Abmessungen: %d Flaechen, %d Beine%s"
+              % (len(jgeo[0]), len(jgeo[1]),
+                 ", Traegheit aus der Datei" if jgeo[4] else ""))
     print("  Masse %.0f kg, Flaeche %.1f m2, %s, cd0 %.4f" %
           (mass_lb * LB_TO_KG, area_ft2 * FT2_TO_M2,
            ("%.0f kN Schub" % (thrust_n / 1000.0)) if thrust_n else ("%.0f PS" % hp),
