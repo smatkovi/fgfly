@@ -27,6 +27,7 @@ static void gleiten(const struct blade_aircraft *a) {
     s.on_ground = 0; s.engine_on = 0;
     s.alt_m = 1000.0f; s.ground_m = 0.0f;
     s.u = 45.0f;
+    const float h0 = s.alt_m, e0 = s.east_m, n0 = s.north_m;
     printf("\nGleiten ohne Schub (Start 1000 m, 45 m/s):\n");
     for (int i = 0; i < 6000; ++i) {
         blade_step(&s, a, 0.01f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0, 1);
@@ -36,8 +37,16 @@ static void gleiten(const struct blade_aircraft *a) {
                    (i + 1) * 0.01, s.alt_m, s.v_ms, s.vs_ms,
                    s.alpha_deg, s.pitch_deg, s.roll_deg);
     }
-    float gleitzahl = s.v_ms > 0.1f && s.vs_ms < -0.05f ? -s.v_ms / s.vs_ms : 0.0f;
-    printf("  Gleitzahl daraus: %.1f\n", gleitzahl);
+    /* Ueber den ganzen Flug, nicht im letzten Bild: Strecke durch
+       Hoehenverlust.  Die Momentaufnahme `-v/vs` am Ende taugt nicht -- ein
+       Flugzeug ohne Geschwindigkeitstrimmung schwingt in einer Phygoide,
+       und je nachdem, wo man hinsieht, steht dort 0 oder 42.  Das hat mich
+       den Long-EZ fuer besser halten lassen, als er ist. */
+    float de = s.east_m - e0, dn = s.north_m - n0;
+    float strecke = sqrtf(de * de + dn * dn);
+    float gefallen = h0 - s.alt_m;
+    printf("  Gleitzahl ueber den ganzen Flug: %.1f  (%.0f m weit, %.0f m tief)\n",
+           gefallen > 1.0f ? strecke / gefallen : 0.0f, strecke, gefallen);
 }
 
 static void abheben(const struct blade_aircraft *a) {

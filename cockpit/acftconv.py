@@ -344,7 +344,7 @@ def convert_yasim(path, out_path):
         geo = yasim_geometry(root, mass_kg, lasten)
         if geo:
             getrimmt = trimmen(geo[0], mass_kg, v_cru)
-            write_geometry(f, geo, mass_kg)
+            write_geometry(f, geo, mass_kg, cd0)
             # Die Leistung selbst, nicht nur ein daraus geschaetzter Schub:
             # ein Propeller zieht beim Anrollen ein Vielfaches dessen, was
             # er bei Reisegeschwindigkeit zieht, und das entscheidet ueber
@@ -857,8 +857,8 @@ def massenpunkte(root, flaechen, mass_kg, lasten=None):
     return (cx, cy, cz), (ixx * 1.25, iyy * 1.25, izz * 1.25)
 
 def trimmen(flaechen, mass_kg, v_cru, rho=1.225):
-    """Das Leitwerk so einstellen, dass das Flugzeug im Reiseflug von selbst
-    geradeaus fliegt.
+    """Das Hoehenleitwerk so einstellen, dass das Flugzeug im Reiseflug von
+    selbst geradeaus fliegt.
 
     Das ist der Schritt, den YASim beim Laden rechnet und den ein
     Geometriemodell braucht: Ohne ihn traegt der Fluegel vor dem
@@ -866,15 +866,35 @@ def trimmen(flaechen, mass_kg, v_cru, rho=1.225):
     hoch, bis es ueberzieht -- im Versuch nach genau einer Sekunde.
 
     Zwei Gleichungen, zwei Unbekannte: Die Auftriebe muessen das Gewicht
-    tragen, und ihre Momente um den Schwerpunkt muessen sich aufheben.
-    Daraus folgt, wieviel das Leitwerk tragen muss, und daraus sein
-    Einstellwinkel.
+    tragen (`L_w + L_t = W`), und ihre Momente um den Schwerpunkt muessen
+    sich aufheben (`L_w*d_w + L_t*d_t = 0`).  Daraus faellt, wieviel das
+    Leitwerk tragen muss, und daraus sein Einstellwinkel.
+
+    **Welche Flaeche getrimmt wird, entscheidet das Hoehenruder und nicht
+    die Groesse.**  Die frueher naheliegende Regel "die groesste Flaeche
+    traegt, alle anderen trimmen" ist beim Long-EZ falsch gleich zweimal:
+    Die groesste waagrechte Flaeche ist dort der Strake, und "alle anderen"
+    sind Aussenfluegel *und* Canard -- beide bekamen denselben
+    Einstellwinkel.  Mit Strake gegen (Fluegel+Canard) haben beide Hebel
+    dasselbe Vorzeichen, der Nenner wird negativ, und heraus kam ein Canard
+    mit 23 Grad Einstellwinkel und eine Gleitzahl von 2,6.
     """
     waagrecht = [s for s in flaechen if not s["vertical"]]
     if len(waagrecht) < 2:
         return
-    haupt = max(waagrecht, key=lambda s: s["length"] * s["chord"])
-    leitwerke = [s for s in waagrecht if s is not haupt]
+
+    # Die Flaeche mit dem Hoehenruder wird getrimmt.  Hat keine eines
+    # (manche YASim-Dateien setzen es nur ueber `<control-input>`), bleibt
+    # die kleinste uebrig -- ein Leitwerk ist nie die groesste Flaeche.
+    mit_ruder = [s for s in waagrecht if abs(s.get("elevator", 0.0)) > 1e-6]
+    if mit_ruder:
+        steuer = max(mit_ruder,
+                     key=lambda s: abs(s["elevator"]) * s["length"] * s["chord"])
+    else:
+        steuer = min(waagrecht, key=lambda s: s["length"] * s["chord"])
+    traeger = [s for s in waagrecht if s is not steuer]
+    if not traeger:
+        return
 
     def kennwerte(s):
         mittel = s["chord"] * (1.0 + s["taper"]) / 2.0
@@ -886,41 +906,81 @@ def trimmen(flaechen, mass_kg, v_cru, rho=1.225):
         d = s["x"] - 0.25 * s["chord"]
         return flaeche, anstieg, d
 
-    S_w, a_w, d_w = kennwerte(haupt)
-    S_t, a_t, d_t = 0.0, 0.0, 0.0
-    for s in leitwerke:
+    # Die tragenden Flaechen zu einer zusammenfassen.  Gewichtet wird mit
+    # Flaeche mal Auftriebsanstieg und nicht mit der Flaeche allein: Ein
+    # kurzer, dicker Strake traegt je Quadratmeter und Grad deutlich weniger
+    # als ein schlanker Aussenfluegel, und der Neutralpunkt liegt dort, wo
+    # die *Auftriebsaenderung* angreift.
+    S_w = a_wS = d_wS = i_wS = c_wS = 0.0
+    for s in traeger:
         f, an, d = kennwerte(s)
-        S_t += f
-        a_t = an if a_t == 0.0 else (a_t + an) / 2.0
-        d_t += f * d
-    if S_t <= 0.0:
+        S_w += f
+        a_wS += f * an
+        d_wS += f * an * d
+        i_wS += f * an * math.radians(s["incidence"])
+        c_wS += f * an * s["camber"]
+    if S_w <= 0.0 or a_wS <= 0.0:
         return
-    d_t /= S_t
-    if abs(d_t - d_w) < 0.05:
+    a_w = a_wS / S_w
+    d_w = d_wS / a_wS
+    i_w = i_wS / a_wS
+    camber_w = c_wS / a_wS
+
+    S_t, a_t, d_t = kennwerte(steuer)
+    if S_t <= 0.0 or abs(d_t - d_w) < 0.05:
         return
 
     W = mass_kg * 9.80665
     q = 0.5 * rho * v_cru * v_cru
     if q < 1.0:
         return
-    nenner = 1.0 - (d_w / d_t if abs(d_t) > 1e-6 else 0.0)
-    if abs(nenner) < 1e-6:
-        return
-    L_w = W / nenner
-    L_t = -L_w * d_w / d_t
+    # L_w + L_t = W  und  L_w*d_w + L_t*d_t = 0
+    L_w = W * d_t / (d_t - d_w)
+    L_t = W - L_w
 
-    # Anstellwinkel des Fluegels daraus, dann der des Leitwerks.
     cl_w = L_w / (q * S_w)
-    alpha = cl_w / a_w - math.radians(haupt["incidence"]) - haupt["camber"]
+    alpha = cl_w / a_w - i_w - camber_w
     cl_t = L_t / (q * S_t)
-    i_t = cl_t / a_t - alpha
-    for s in leitwerke:
-        s["incidence"] = math.degrees(i_t)
+    i_t = cl_t / a_t - alpha - steuer["camber"]
+    steuer["incidence"] = math.degrees(i_t)
     return math.degrees(alpha), math.degrees(i_t)
 
-def write_geometry(f, geo, mass_kg):
+CD_PROFIL = 0.008          # Profilwiderstand je Flaeche, wie ihn blade.c setzt
+
+
+def rumpfwiderstand(flaechen, area, cd0):
+    """Was vom Nullwiderstand uebrigbleibt, wenn die Flaechen ihren Teil
+    schon tragen.
+
+    `cd0` kommt aus einer Messung: Im Reiseflug deckt der Schub den
+    Widerstand, und daraus faellt der Nullwiderstand des **ganzen**
+    Flugzeugs.  Das Geometriemodell rechnet die Flaechen aber einzeln, und
+    jede bringt ihren eigenen Profilwiderstand mit (`0.008` in blade.c, auf
+    ihre eigene Flaeche bezogen).  Wer daneben noch einen festen
+    Rumpfwiderstand von 0,035 stehen laesst -- so war es --, zaehlt den
+    Widerstand zwei- bis dreimal: Der Long-EZ kam damit auf eine Gleitzahl
+    von 3 statt der 15 bis 20, die er wirklich hat.
+
+    Also: Rumpf ist, was `cd0` minus Flaechenanteil uebriglaesst.  Ganz auf
+    null darf es nicht fallen -- einen Rumpf, ein Fahrwerk und Spalten hat
+    jedes Flugzeug --, deshalb die Untergrenze.
+    """
+    if area <= 0.0 or cd0 <= 0.0:
+        return 0.035
+    summe = 0.0
+    for s in flaechen:
+        mittel = s["chord"] * (1.0 + s["taper"]) / 2.0
+        spann = (2.0 * s["length"]) if s["mirror"] else s["length"]
+        summe += mittel * spann
+    anteil = CD_PROFIL * summe / area
+    return max(0.15 * cd0, cd0 - anteil)
+
+
+def write_geometry(f, geo, mass_kg, cd0=0.0):
     flaechen, beine, area, span, traegheit, quelle, abstand = geo
     f.write("geometrie 1" + "\n")
+    if cd0 > 0.0:
+        f.write("cd_body %.4f" % rumpfwiderstand(flaechen, area, cd0) + "\n")
     if traegheit:
         f.write("inertia %.0f %.0f %.0f" % traegheit + "\n")
     for s in flaechen:
@@ -1024,7 +1084,7 @@ def convert(target, out_path=None):
                 abriss = 16.0
         jgeo = jsbsim_geometry(root, abriss)
         if jgeo:
-            write_geometry(f, jgeo, mass_lb * LB_TO_KG)
+            write_geometry(f, jgeo, mass_lb * LB_TO_KG, cd0)
             f.write("reise_ms %.1f\n" % 60.0)
             if not thrust_n and hp > 0.0:
                 f.write("leistung_w %.0f\n" % (hp * 745.7))
