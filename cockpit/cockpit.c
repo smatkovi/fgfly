@@ -28,6 +28,7 @@
  */
 #include "fdm.h"
 #include "terrain.h"
+#include "ton.h"
 #include "touchinput.h"
 #include "xtouch.h"
 
@@ -1843,6 +1844,10 @@ int main(int argc, char **argv) {
     /* Ohne Hand am Geraet: die erste Auswahl nehmen und losfliegen. */
     if (getenv("COCKPIT_GROUND")) start_airborne = 0;
     if (getenv("COCKPIT_AUTOSTART")) { load_world(); screen_start = 0; }
+
+    /* Der Ton laeuft in einem eigenen Faden und darf gern fehlen: Ohne
+       PulseAudio fliegt es sich genauso, nur stiller. */
+    ton_start();
     if (getenv("COCKPIT_ALT")) {
         fdm.alt_m = (float)atof(getenv("COCKPIT_ALT"));
         fdm.on_ground = 0;
@@ -2107,6 +2112,10 @@ int main(int argc, char **argv) {
             rudder -= rudder * (dt * 4.0f > 1.0f ? 1.0f : dt * 4.0f);
             if (fabsf(rudder) < 0.01f) rudder = 0.0f;
         }
+        /* Was zu hoeren ist, folgt dem, was das Flugmodell gerade tut. */
+        ton_zustand(fdm.rpm, acft->rpm_max, throttle, fdm.v_ms,
+                    fdm.on_ground, acft->jet, fdm.engine_on);
+
         if (quit_now) break;
 
         if (screen_start) {
@@ -2274,6 +2283,7 @@ int main(int argc, char **argv) {
         if (seconds > 0.0 && t - start >= seconds) break;
     }
 done:
+    ton_stop();
     if (fetch_pid > 0) {                /* der Holer soll nicht weiterlaufen */
         kill(fetch_pid, SIGTERM);
         waitpid(fetch_pid, NULL, 0);

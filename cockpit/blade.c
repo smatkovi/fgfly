@@ -436,7 +436,28 @@ static void blade_trim(struct blade_aircraft *a, float v_ms) {
        ganzer Meter noetig -- bei fuenf Metern Rumpflaenge waere das
        keine Korrektur mehr, sondern eine Faelschung, und die
        Fahrwerkslage stimmte danach auch nicht mehr. */
-    for (int schritt = 0; schritt <= 12; ++schritt) {
+    /* Wie weit verschoben werden darf, haengt am Flugzeug: vier Zehntel der
+       mittleren Fluegeltiefe.  Bei der Cessna sind das 60 cm, beim A320 gut
+       zwei Meter -- und bei beiden wird es gar nicht gebraucht.  Eine feste
+       Zahl waere fuer das eine zu eng und fuer das andere zu weit. */
+    float tiefe = 1.5f;
+    for (int i = 0; i < a->nsurf; ++i)
+        if (!a->surf[i].vertical && a->surf[i].chord > 0.0f &&
+            a->surf[i].length * a->surf[i].chord > tiefe * 0.0f) {
+            /* die groesste waagrechte Flaeche gibt die Tiefe vor */
+        }
+    {
+        float groesste = 0.0f;
+        for (int i = 0; i < a->nsurf; ++i) {
+            if (a->surf[i].vertical) continue;
+            float f = a->surf[i].length * a->surf[i].chord;
+            if (f > groesste) { groesste = f; tiefe = a->surf[i].chord; }
+        }
+    }
+    int schritte = (int)(0.4f * tiefe / 0.05f) * 2;
+    if (schritte < 6) schritte = 6;
+    if (schritte > 40) schritte = 40;
+    for (int schritt = 0; schritt <= schritte; ++schritt) {
         /* 0, +5, -5, +10, -10 ... Zentimeter */
         float schieb = (schritt + 1) / 2 * 0.05f * ((schritt % 2) ? 1.0f : -1.0f);
         if (schritt == 0) schieb = 0.0f;

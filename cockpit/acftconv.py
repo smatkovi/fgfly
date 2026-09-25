@@ -224,13 +224,42 @@ def convert_yasim(path, out_path):
     root = ET.parse(path).getroot()
     name = os.path.splitext(os.path.basename(path))[0]
 
-    mass_lb = float(root.get("mass", 1000))
-    for ballast in root.findall(".//ballast"):
-        mass_lb += float(ballast.get("mass", 0))
-    for prop in root.findall(".//propeller"):
-        mass_lb += float(prop.get("mass", 0))
-    mass_lb += 170.0                      # ein Mensch sitzt auch drin
+    # Die Masse.  `<airplane mass>` ist das **Leergewicht**, und Ballast und
+    # Motor stecken darin -- sie sind Punktmassen innerhalb dieser Zahl, keine
+    # Zuladung.  Wer sie dazuzaehlt, bekommt ein Flugzeug ueber der
+    # zulaessigen Hoechstmasse: Der Long-EZ kam so auf 617 kg, obwohl in
+    # seiner eigenen Datei 601 als Hoechstmasse steht -- und weil Motor
+    # (240 lb im Heck) und Nasenballast (240 lb) verschieden weit vom
+    # Schwerpunkt sitzen, verschob das auch den Schwerpunkt.
+    #
+    # Dazu kommt, was wirklich zugeladen wird: der Pilot und ein Fuenftel
+    # Sprit -- derselbe Beladungszustand, mit dem YASim auch den Anflug
+    # rechnet.
+    leer_lb = float(root.get("mass", 1000))
+    zuladung_lb = 0.0
+    lasten_tab = zuladung(os.path.dirname(os.path.dirname(os.path.abspath(path)))
+                          or os.path.dirname(os.path.abspath(path)))
+    pilot_da = False
+    for w in root.findall(".//weight"):
+        direkt = float(w.get("mass-lbs", 0) or 0)
+        if direkt > 0.0:
+            zuladung_lb += direkt
+            continue
+        treffer = re.search(r"weight\[(\d+)\]", w.get("mass-prop", ""))
+        platz = int(treffer.group(1)) if treffer else None
+        if platz == 0 or (platz is None and not pilot_da):
+            zuladung_lb += lasten_tab.get(0, 170.0) if lasten_tab else 170.0
+            pilot_da = True
+    if not pilot_da:
+        zuladung_lb += 170.0              # irgendwer muss ja fliegen
+    for t in root.findall(".//tank"):
+        zuladung_lb += float(t.get("capacity", 0) or 0) * 0.2
+    mass_lb = leer_lb + zuladung_lb
     mass_kg = mass_lb * LB_TO_KG
+    hoechst = float(root.get("mtow-lbs", 0) or 0)
+    if hoechst > 0.0 and mass_lb > hoechst:
+        print("  Achtung: %.0f lb liegen ueber der Hoechstmasse %.0f lb"
+              % (mass_lb, hoechst))
 
     # Fluegelflaeche und Streckung aus den Flaechenstuecken
     area = 0.0
@@ -766,8 +795,7 @@ def massenpunkte(root, flaechen, mass_kg, lasten=None):
         if m > 0.0:
             zu(m, _f(w, "x"), _f(w, "y"), _f(w, "z"))
     for t in root.findall(".//tank"):
-        # Tanks sind im Leerzustand leer; ein Fuenftel Sprit ist die
-        # Annahme, mit der YASim auch den Anflug rechnet.
+        # Ein Fuenftel Sprit -- dieselbe Annahme wie oben bei der Masse.
         m = _f(t, "capacity") * LB_TO_KG * 0.2
         if m > 0.0:
             zu(m, _f(t, "x"), _f(t, "y"), _f(t, "z"))
