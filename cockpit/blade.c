@@ -58,16 +58,84 @@ static void airfoil(float alpha, float aspect, float camber,
     *cd = 0.008f + cdi * (1.0f - blend) + cd_plate * blend;
 }
 
+static void blade_step_one(struct blade_state *s, const struct blade_aircraft *a,
+                           float dt, float stick_roll, float stick_pitch,
+                           float rudder, float throttle, float flaps,
+                           int brake, int gear_down);
+
 void blade_place_on_ground(struct blade_state *s, const struct blade_aircraft *a) {
-    float tief = 0.0f;
+    /* Die Ruhelage wird gerechnet, nicht simuliert.
+     *
+     * Die Raeder stehen nicht auf einer Ebene: Beim Bugradflugzeug haengt
+     * das Bugrad ein paar Zentimeter tiefer als die Hauptraeder.  Setzt man
+     * das Flugzeug so hin, dass nur das tiefste Rad den Boden beruehrt,
+     * dreht es sich beim ersten Bild um dieses eine Rad -- und wenn dieses
+     * Bild nach dem Laden 1,6 Sekunden dauert, steht es danach auf der Nase.
+     *
+     * Gesucht sind Hoehe und Nickwinkel, bei denen die Federn das Gewicht
+     * tragen und ihre Momente sich aufheben.  Das lineare Gleichungssystem
+     * dafuer hat eine Falle: Es kennt den Unterschied zwischen druecken und
+     * ziehen nicht und stellt das Flugzeug auch gern auf den Hecksporn.
+     * Deshalb wird stattdessen genaehert -- in jedem Durchgang zaehlen nur
+     * die Beine, die wirklich Boden haben.
+     */
+    float W = a->mass_kg * G;
+    float d = 0.0f;                 /* Boden minus Hoehe */
+    float theta = 0.0f;             /* Nickwinkel, Bogenmass */
+
+    /* Anfangswert: das tiefste Rad beruehrt gerade. */
     for (int i = 0; i < a->ngear; ++i)
-        if (a->gear[i].z > tief) tief = a->gear[i].z;
-    /* Vier Zentimeter Einfederung: so viel traegt das Gewicht, und so
-       steht es ruhig da, statt beim ersten Bild zu huepfen. */
-    s->alt_m = s->ground_m + tief - 0.04f;
+        if (-a->gear[i].z > d || i == 0) d = -a->gear[i].z;
+
+    for (int runde = 0; runde < 300; ++runde) {
+        float kraft = 0.0f, moment = 0.0f, ksum = 0.0f, kxx = 0.0f;
+        for (int i = 0; i < a->ngear; ++i) {
+            float pen = d + a->gear[i].z - theta * a->gear[i].x;
+            if (pen <= 0.0f) continue;          /* haengt in der Luft */
+            float k = a->gear[i].spring_n_m;
+            float F = k * pen;
+            kraft += F;
+            moment += a->gear[i].x * F;
+            ksum += k;
+            kxx += k * a->gear[i].x * a->gear[i].x;
+        }
+        if (ksum <= 0.0f) {                     /* nichts beruehrt: tiefer */
+            d += 0.02f;
+            continue;
+        }
+        float dd = (W - kraft) / ksum;
+        /* Das Vorzeichen: Ein nasenlastiges Moment (negativ) wird kleiner,
+           wenn die Nase tiefer kommt -- dann traegt das Bugrad mehr.  Also
+           geht die Verstellung in dieselbe Richtung wie das Moment; mit dem
+           umgekehrten Vorzeichen dreht sich das Flugzeug so lange, bis es
+           auf dem Hecksporn steht. */
+        float dth = kxx > 1.0f ? moment / kxx : 0.0f;
+        d += dd * 0.6f;
+        theta += dth * 0.6f;
+        if (theta > 0.35f) theta = 0.35f;
+        if (theta < -0.35f) theta = -0.35f;
+        if (fabsf(dd) < 1e-5f && fabsf(dth) < 1e-5f) break;
+    }
+
+    /* Findet die Naeherung keine vernuenftige Lage -- weil die Beine alle
+       fast unter dem Schwerpunkt sitzen und das Flugzeug sich frei neigen
+       kann --, dann lieber waagrecht hinstellen als auf dem Heck. */
+    if (fabsf(theta) > 0.34f) {
+        theta = 0.0f;
+        d = 0.0f;
+        for (int i = 0; i < a->ngear; ++i)
+            if (-a->gear[i].z < d || i == 0) d = -a->gear[i].z;
+        d += 0.03f;
+    }
+
+    s->alt_m = s->ground_m - d;
+    s->pitch_deg = theta * RAD;
+    s->roll_deg = 0.0f;
     s->on_ground = 1;
     s->u = s->v = s->w = 0.0f;
     s->p = s->q = s->r = 0.0f;
+    s->vs_ms = 0.0f;
+    s->v_ms = 0.0f;
 }
 
 void blade_init(struct blade_state *s, const struct blade_aircraft *a) {
@@ -391,11 +459,15 @@ static void blade_step_one(struct blade_state *s, const struct blade_aircraft *a
        gegen die Geschwindigkeit, dazu Reibung laengs und quer.  Ohne die
        quere Reibung dreht das Flugzeug am Boden wie auf Eis. */
     int touching = 0;
+    s->gear_pen = 0.0f;
+    s->gear_force = 0.0f;
+    s->gear_touch = 0;
     for (int i = 0; i < a->ngear && gear_down; ++i) {
         const struct blade_gear *g = &a->gear[i];
         /* Wo der Punkt in der Welt steht: nur die Hoehe zaehlt. */
         float wz = s->alt_m - (-st * g->x + ct * sp * g->y + ct * cp * g->z);
         float pen = s->ground_m - wz;
+        if (i < BLADE_MAX_GEAR) s->pen_je[i] = pen;
         if (pen <= 0.0f) continue;
         if (pen > 0.5f) pen = 0.5f;            /* durchgeschlagen ist durchgeschlagen */
         touching = 1;
@@ -419,6 +491,9 @@ static void blade_step_one(struct blade_state *s, const struct blade_aircraft *a
         float fy = -mu_side * (-fz) * clampf(s->v * 0.5f, -1.0f, 1.0f);
         if (g->steer > 0.0f) fy += rudder * (-fz) * 0.35f;
         add_force(&k, fx, fy, fz, g->x, g->y, g->z);
+        if (pen > s->gear_pen) s->gear_pen = pen;
+        s->gear_force += -fz;
+        ++s->gear_touch;
     }
     s->on_ground = touching;
 

@@ -92,6 +92,12 @@ static int n_aircraft, n_scenery, sel_aircraft, sel_scenery;
    Platzes, dann zwei Buchstaben der Kennung, dann die Liste, dann die Bahn. */
 enum { S_MAIN, S_LETTER, S_COUNTRY, S_LIST, S_ACFT, S_RWY, S_FETCH };
 static int screen_start = 1;            /* 1 = waehlen, 0 = fliegen */
+/* Nach dem Laden steht das Flugzeug zwar da, aber die Bodenhoehe unter ihm
+   ist erst im ersten Bild wirklich bekannt -- und dieses erste Bild dauert
+   nach dem Laden ueber eine Sekunde.  Wer es mitrechnet, hat das Flugzeug
+   schon umgeworfen, bevor es losging.  Also: einmal ueberspringen und dabei
+   neu hinstellen. */
+static int neu_hinstellen;
 static int page = S_MAIN;
 static int start_airborne;
 
@@ -1027,7 +1033,11 @@ static void begin_aircraft_fetch(const struct catalog_entry *e) {
 
 /* Was der Startbildschirm ausgewaehlt hat, wird jetzt wirklich geladen. */
 static void load_world(void) {
-    if (n_aircraft > 0) {
+    /* COCKPIT_ACFT sticht die Auswahl aus dem Menue: Wer beim Pruefen ein
+       bestimmtes Flugzeug angibt, will es auch fliegen.  Das hat mich eine
+       halbe Nacht gekostet -- die Versuche liefen mit dem Flugzeug aus der
+       Liste, waehrend das Protokoll das angeforderte nannte. */
+    if (n_aircraft > 0 && !getenv("COCKPIT_ACFT")) {
         if (fdm_load(&aircraft_data, aircraft[sel_aircraft].path))
             printf("Flugzeug: %s\n", aircraft_data.name);
         char mpath[288];
@@ -1088,6 +1098,8 @@ static void load_world(void) {
        diesen Schritt steckt das Fahrwerk im Boden und die Feder schiesst
        das Flugzeug beim ersten Bild in die Luft. */
     fdm_place(&fdm, acft);
+    /* Und beim ersten wirklichen Bild noch einmal -- siehe unten. */
+    neu_hinstellen = 1;
     if (on_runway) ground = fdm.ground_m;
     if (start_airborne) {
         fdm.alt_m = ground + 600.0f;
@@ -1801,9 +1813,14 @@ int main(int argc, char **argv) {
         printf("Flugzeug: %s (%s)\n", aircraft_data.name, acft_path);
     else
         printf("Flugzeug: %s\n", aircraft_data.name);
-    printf("  Flugmodell: %s\n", aircraft_data.has_blade
-           ? "Geometrie (Flaechenstuecke, sechs Freiheitsgrade)"
-           : "Tabellen (Beiwerte, drei Freiheitsgrade)");
+    if (aircraft_data.has_blade)
+        printf("  Flugmodell: Geometrie, %d Flaechen, %d Beine, "
+               "Traegheit %.0f/%.0f/%.0f\n",
+               aircraft_data.blade.nsurf, aircraft_data.blade.ngear,
+               aircraft_data.blade.ixx, aircraft_data.blade.iyy,
+               aircraft_data.blade.izz);
+    else
+        printf("  Flugmodell: Tabellen (Beiwerte, drei Freiheitsgrade)\n");
     printf("  %.0f kg, %.1f m2, Schub %.0f N, %.0f-%.0f U/min, %d+%d Stuetzstellen\n",
            aircraft_data.mass_kg, aircraft_data.wing_area_m2, aircraft_data.thrust_max_n,
            aircraft_data.rpm_idle, aircraft_data.rpm_max, aircraft_data.cl_alpha.n, aircraft_data.cd_alpha.n);
@@ -2076,7 +2093,15 @@ int main(int argc, char **argv) {
             float surfaces[4] = { flaps, sr, sp, rudder };
             terrain_set_controls(surfaces);
         }
-        fdm_step(&fdm, acft, dt, sr, sp, rudder, throttle, flaps, brake, gear_down);
+        if (neu_hinstellen && !screen_start) {
+            /* Der Boden steht jetzt fest: hinstellen, und dieses eine Bild
+               nicht mitrechnen.  Es traegt die ganze Ladezeit als
+               Zeitschritt, und die gehoert nicht in den Flug. */
+            fdm_place(&fdm, acft);
+            neu_hinstellen = 0;
+        } else {
+            fdm_step(&fdm, acft, dt, sr, sp, rudder, throttle, flaps, brake, gear_down);
+        }
         /* Das Seitenruder federt zurueck, sobald der Finger weg ist. */
         if (touch_fd < 0 ? !dragging : touch_now.n == 0) {
             rudder -= rudder * (dt * 4.0f > 1.0f ? 1.0f : dt * 4.0f);
@@ -2197,6 +2222,25 @@ int main(int argc, char **argv) {
         ++frames;
 
         if (shot && frames == shot_frame) write_ppm(shot, width, height);
+        /* COCKPIT_DEBUG=2: die ersten 80 Bilder einzeln protokollieren.  Bei
+           einer Zeile je Sekunde sieht man nur das Ergebnis, nie den Weg
+           dahin -- und genau der zaehlt beim Aufsetzen. */
+        {
+            static int einzeln = -1;
+            if (einzeln < 0) {
+                const char *d = getenv("COCKPIT_DEBUG");
+                einzeln = (d && d[0] == '2') ? 80 : 0;
+            }
+            if (einzeln > 0 && !screen_start) {
+                --einzeln;
+                printf("B%-4d dt %.3f  Hoehe %+8.3f  Boden %+8.3f  Nicken %+7.2f  "
+                       "Rollen %+7.2f  Beine %d  je %+.3f %+.3f %+.3f %+.3f\n",
+                       frames, dt, fdm.alt_m, fdm.ground_m, fdm.pitch_deg,
+                       fdm.roll_deg, fdm.blade.gear_touch,
+                       fdm.blade.pen_je[0], fdm.blade.pen_je[1],
+                       fdm.blade.pen_je[2], fdm.blade.pen_je[3]);
+            }
+        }
         double t = now_s();
         if (t - last >= 1.0) {
             /* Bilder seit der letzten Zeile, nicht der Schnitt seit dem Start -
@@ -2215,11 +2259,15 @@ int main(int argc, char **argv) {
             if (getenv("COCKPIT_DEBUG"))
                 printf("      Sicht %d  Geste %d  Finger %d  Kreisen %+6.1f/%+5.1f  "
                        "Abstand %.0f m  Neigen %+5.1f/%+5.1f -> Knueppel "
-                       "%+4.2f/%+4.2f  Boden %.1f m  Hoehe %.1f m\n",
+                       "%+4.2f/%+4.2f  Boden %.1f m  Hoehe %.1f m  "
+                       "Fahrwerk %d Punkte, %.0f N, je %+.3f %+.3f %+.3f %+.3f\n",
                        view_mode, gesture, touch_now.n, orbit_az, orbit_el, chase_m,
                        tilt_roll, tilt_pitch,
                        stick_from_tilt(tilt_roll), stick_from_tilt(tilt_pitch),
-                       fdm.ground_m, fdm.alt_m);
+                       fdm.ground_m, fdm.alt_m,
+                       fdm.blade.gear_touch, fdm.blade.gear_force,
+                       fdm.blade.pen_je[0], fdm.blade.pen_je[1],
+                       fdm.blade.pen_je[2], fdm.blade.pen_je[3]);
             last = t;
             frames_at_last = frames;
         }

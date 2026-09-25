@@ -90,6 +90,10 @@ struct blade_state {
     float alpha_deg, beta_deg;  /* Anstell- und Schiebewinkel, fuer die Anzeige */
     float vs_ms, v_ms;          /* Steigen und Fahrt, fuer die Instrumente */
     float load_g;               /* Lastvielfaches, fuer das Blickfeld */
+    /* Nur zum Nachsehen: was das Fahrwerk im letzten Schritt getan hat. */
+    float gear_pen, gear_force;
+    float pen_je[BLADE_MAX_GEAR];
+    int gear_touch;
 };
 
 int  blade_load(struct blade_aircraft *a, const char *path);   /* 1 = gelesen */
