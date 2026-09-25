@@ -99,6 +99,9 @@ static int screen_start = 1;            /* 1 = waehlen, 0 = fliegen */
    schon umgeworfen, bevor es losging.  Also: einmal ueberspringen und dabei
    neu hinstellen. */
 static int neu_hinstellen;
+/* Wann zuletzt ein Finger auf dem Schirm lag -- fuer die Entprellung
+   der Schalter, siehe die Schleife. */
+static double t_letzte_beruehrung;
 static int page = S_MAIN;
 static int start_airborne;
 
@@ -1874,6 +1877,22 @@ int main(int argc, char **argv) {
             /* Der Schirm meldet weiter, auch wenn wir weggewischt sind - die
                Finger auf dem Startbildschirm sind dann nicht unsere. */
             if (!app_active) memset(&touch_now, 0, sizeof(touch_now));
+            /* Ein Tipp ist erst dann ein neuer Tipp, wenn der Schirm vorher
+               wirklich leer war -- und zwar laenger als ein Bild.
+               `touch_prev.n == 0` genuegt dafuer nicht: Der Schirm laesst
+               einen liegenden Finger gelegentlich fuer ein einzelnes Bild
+               aus (beim zweiten Finger steht das ein paar Zeilen weiter
+               unten schon). Faellt er unter einem Schalter aus, zaehlt das
+               Wiederauftauchen als neues Aufsetzen und der Schalter springt
+               ein zweites Mal um -- der Motor, den man gerade angelassen
+               hat, steht dann wieder. Genau das hiess "der Motor startet
+               nicht".
+               80 ms decken zwei ausgefallene Bilder bei 30 Bildern je
+               Sekunde ab und lassen einen gewollten Doppeltipp (rund 150 ms
+               Abstand) noch durch. */
+            double t_tipp = now_s();
+            int neu_aufgesetzt = (t_tipp - t_letzte_beruehrung) > 0.08;
+            if (touch_now.n > 0) t_letzte_beruehrung = t_tipp;
             if (touch_now.n == 2) {
                 float dx = touch_now.p[0].x - touch_now.p[1].x;
                 float dy = touch_now.p[0].y - touch_now.p[1].y;
@@ -1908,10 +1927,10 @@ int main(int argc, char **argv) {
                     /* Im Menue bedient derselbe Finger das Menue, nicht die
                        Schubhebel - das fehlte und machte die Auswahl unbedienbar. */
                     if (screen_start) {
-                        if (touch_prev.n == 0) touch_start(x, y);   /* nur beim Aufsetzen */
+                        if (neu_aufgesetzt) touch_start(x, y);   /* nur beim Aufsetzen */
                     }
                     else touch((int)(x * width), (int)(y * height), width, height,
-                               touch_prev.n == 0);
+                               neu_aufgesetzt);
                 } else if (gesture == 2 && touch_prev.n == 1) {
                     orbit_az -= (x - touch_prev.p[0].x) * 240.0f;
                     orbit_el += (y - touch_prev.p[0].y) * 160.0f;
