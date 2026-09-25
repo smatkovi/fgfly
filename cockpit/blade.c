@@ -343,53 +343,131 @@ static void flaechenkraefte(struct kraft *k, const struct blade_aircraft *a,
  * dem Papier heraus und im Flug nicht: die AG-14 hatte ueberall ein
  * nasenlastiges Moment und stuerzte, obwohl die Rechnung "stabil" sagte.
  */
-static void blade_trim(struct blade_aircraft *a, float v_ms) {
-    if (v_ms < 5.0f) v_ms = 45.0f;
-    /* Welche Flaeche trimmt?  Die mit dem Hoehenruder -- das ist die Frage,
-       die die Datei selbst beantwortet.  Nach Groesse zu gehen ging schief:
-       Der Long-EZ hat drei waagrechte Flaechen, die groesste ist seine
-       Strake, und der Trimmer verstellte daraufhin den Hauptfluegel. */
-    int getrimmt = 0;
-    float x_mittel = 0.0f;
-    for (int i = 0; i < a->nsurf; ++i)
-        if (!a->surf[i].vertical && a->surf[i].elevator != 0.0f) {
-            ++getrimmt;
-            x_mittel += a->surf[i].x;
-        }
-    if (!getrimmt) return;
-    x_mittel /= getrimmt;
-    /* Und in welche Richtung wirkt ein groesserer Einstellwinkel?  Hinter
-       dem Schwerpunkt drueckt er die Nase, davor hebt er sie.  Ohne dieses
-       Vorzeichen lief der Trimmer beim Long-EZ in die Begrenzung: Er nahm
-       dem Vorfluegel genau den Auftrieb weg, den er zum Anheben gebraucht
-       haette. */
-    float richtung = x_mittel > 0.0f ? -1.0f : 1.0f;
+/* Zwei Reste, zwei Stellgroessen: Auftrieb gegen Gewicht, Moment gegen
+   null; Anstellwinkel und Einstellwinkel des Hoehenruders.  Die beiden
+   haengen voneinander ab -- mehr Anstellwinkel heisst auch mehr Moment --,
+   also muessen sie zusammen geloest werden.  Abwechselnd nachziehen
+   funktioniert nicht: Beim Long-EZ lief das in eine Scheinloesung mit dem
+   Entenfluegel auf 17 Grad, also weit im Abriss.
 
-    float rho = blade_density(0.0f);
-    float gewicht = a->mass_kg * G;
-    float alpha = 2.0f * DEG, i_leit = 0.0f;
-    for (int runde = 0; runde < 60; ++runde) {
-        float u = v_ms * cosf(alpha), w = v_ms * sinf(alpha);
-        struct kraft k = {0, 0, 0, 0, 0, 0};
-        flaechenkraefte(&k, a, rho, u, 0, w, 0, 0, 0, 0, 0, 0, 0);
-        /* Auftrieb ist die Kraft nach oben, also gegen z. */
-        float auftrieb = -(k.fz * cosf(alpha) - k.fx * sinf(alpha));
-        float fehl_auftrieb = (auftrieb - gewicht) / gewicht;
-        float fehl_moment = k.my / (gewicht * 2.0f);
-        alpha -= fehl_auftrieb * 0.08f;
-        i_leit += richtung * fehl_moment * 0.05f;
-        alpha = clampf(alpha, -10.0f * DEG, 14.0f * DEG);
-        i_leit = clampf(i_leit, -15.0f * DEG, 15.0f * DEG);
-        for (int i = 0; i < a->nsurf; ++i)
-            if (!a->surf[i].vertical && a->surf[i].elevator != 0.0f)
-                a->surf[i].incidence_deg = i_leit * RAD;
-        if (fabsf(fehl_auftrieb) < 0.002f && fabsf(fehl_moment) < 0.002f) break;
-    }
+   Newton mit numerisch bestimmter Jacobimatrix: vier zusaetzliche
+   Kraefteauswertungen je Runde, dreissig Runden -- auf dem Geraet sind das
+   ein paar Millisekunden, einmal beim Laden. */
+static void reste(struct blade_aircraft *a, float v_ms, float rho, float W,
+                  float alpha, float i_leit, int *welche, int n_leit,
+                  float *r_auftrieb, float *r_moment) {
+    for (int i = 0; i < a->nsurf; ++i)
+        if (welche[i]) a->surf[i].incidence_deg = i_leit * RAD;
+    float u = v_ms * cosf(alpha), w = v_ms * sinf(alpha);
+    struct kraft k = {0, 0, 0, 0, 0, 0};
+    flaechenkraefte(&k, a, rho, u, 0.0f, w, 0, 0, 0, 0, 0, 0, 0);
+    float auftrieb = -(k.fz * cosf(alpha) - k.fx * sinf(alpha));
+    *r_auftrieb = (auftrieb - W) / W;
+    *r_moment = k.my / (W * 2.0f);
+    (void)n_leit;
 }
 
-/* Ein Schritt des Modells.  Nach aussen sichtbar ist blade_step darunter:
-   Es zerlegt den Bildabstand in kleine Schritte. */
-static void blade_step_one(struct blade_state *s, const struct blade_aircraft *a,
+/* Ein Durchgang: trimmen und sagen, wie gut es gelungen ist. */
+static float blade_trim_einmal(struct blade_aircraft *a, float v_ms,
+                               float *i_leit_aus) {
+    if (v_ms < 5.0f) v_ms = 45.0f;
+    int welche[BLADE_MAX_SURF];
+    int n_leit = 0;
+    float x_mittel = 0.0f;
+    for (int i = 0; i < a->nsurf; ++i) {
+        welche[i] = (!a->surf[i].vertical && a->surf[i].elevator != 0.0f);
+        if (welche[i]) { ++n_leit; x_mittel += a->surf[i].x; }
+    }
+    if (!n_leit) return 0.0f;
+    x_mittel /= n_leit;
+
+    float rho = blade_density(0.0f);
+    float W = a->mass_kg * G;
+    float alpha = 2.0f * DEG, i_leit = 0.0f;
+    float ra, rm;
+    for (int runde = 0; runde < 30; ++runde) {
+        reste(a, v_ms, rho, W, alpha, i_leit, welche, n_leit, &ra, &rm);
+        if (fabsf(ra) < 0.001f && fabsf(rm) < 0.001f) break;
+        const float h = 0.003f;              /* knapp 0,2 Grad */
+        float ra2, rm2, ra3, rm3;
+        reste(a, v_ms, rho, W, alpha + h, i_leit, welche, n_leit, &ra2, &rm2);
+        reste(a, v_ms, rho, W, alpha, i_leit + h, welche, n_leit, &ra3, &rm3);
+        float j11 = (ra2 - ra) / h, j12 = (ra3 - ra) / h;
+        float j21 = (rm2 - rm) / h, j22 = (rm3 - rm) / h;
+        float det = j11 * j22 - j12 * j21;
+        if (fabsf(det) < 1e-6f) break;
+        float dalpha = (-ra * j22 + rm * j12) / det;
+        float dileit = (-j11 * rm + j21 * ra) / det;
+        /* Gedaempft, sonst springt der erste Schritt ueber den Abriss. */
+        float schritt = 0.6f;
+        if (fabsf(dalpha) > 4.0f * DEG) dalpha *= 4.0f * DEG / fabsf(dalpha);
+        if (fabsf(dileit) > 4.0f * DEG) dileit *= 4.0f * DEG / fabsf(dileit);
+        alpha += dalpha * schritt;
+        i_leit += dileit * schritt;
+        alpha = clampf(alpha, -8.0f * DEG, 12.0f * DEG);
+        i_leit = clampf(i_leit, -12.0f * DEG, 12.0f * DEG);
+    }
+    for (int i = 0; i < a->nsurf; ++i)
+        if (welche[i]) a->surf[i].incidence_deg = i_leit * RAD;
+    if (i_leit_aus) *i_leit_aus = i_leit * RAD;
+    (void)x_mittel;
+    return fabsf(ra) + fabsf(rm);
+}
+
+/* Und der Schwerpunkt als letzte Stellschraube.
+ *
+ * Er ist das unsicherste Stueck der ganzen Rechnung: Er kommt aus einer
+ * Masseverteilung ueber Rumpf und Flaechen, und wo genau die Zuladung
+ * sitzt, weiss die Datei oft nicht.  Beim Long-EZ lag er nach der
+ * Verteilung 27 Prozent der Fluegeltiefe vor dem Neutralpunkt -- so
+ * kopflastig, dass der Entenfluegel ihn nicht mehr heben konnte, und das
+ * Flugzeug stuerzte mit vollem Ausschlag.
+ *
+ * Also: Laesst sich das Flugzeug so nicht trimmen, wird der Schwerpunkt
+ * verschoben, bis es geht -- in Schritten von fuenf Zentimetern, hoechstens
+ * einen halben Meter, und die kleinste Verschiebung gewinnt.  Das ist keine
+ * Willkuer: Ein Flugzeug, das sich nicht trimmen laesst, ist falsch
+ * gerechnet, und die einzige Zahl, die dabei geraten war, ist diese.
+ */
+static void blade_trim(struct blade_aircraft *a, float v_ms) {
+    float beste_rest = 1e9f, beste_schiebung = 0.0f;
+    /* Hoechstens 30 cm: Was daraus nicht zu trimmen ist, ist nicht
+       durch eine verschobene Zahl zu retten.  Beim Long-EZ waere ein
+       ganzer Meter noetig -- bei fuenf Metern Rumpflaenge waere das
+       keine Korrektur mehr, sondern eine Faelschung, und die
+       Fahrwerkslage stimmte danach auch nicht mehr. */
+    for (int schritt = 0; schritt <= 12; ++schritt) {
+        /* 0, +5, -5, +10, -10 ... Zentimeter */
+        float schieb = (schritt + 1) / 2 * 0.05f * ((schritt % 2) ? 1.0f : -1.0f);
+        if (schritt == 0) schieb = 0.0f;
+        struct blade_aircraft probe = *a;
+        /* Verschoben werden nur die Flaechen, nicht das Fahrwerk.  Die
+           Verschiebung korrigiert naemlich nicht den Schwerpunkt, sondern
+           meine Schaetzung der Angriffspunkte: Wo genau die Flaeche einer
+           Strake oder eines Entenfluegels traegt, ist ungenauer bekannt als
+           die Lage der Raeder.  Nimmt man das Fahrwerk mit, steht das
+           Flugzeug hinterher auf seinem eigenen Schwerpunkt und kippt beim
+           ersten Bild nach hinten. */
+        for (int i = 0; i < probe.nsurf; ++i) probe.surf[i].x += schieb;
+        float i_leit = 0.0f;
+        float rest = blade_trim_einmal(&probe, v_ms, &i_leit);
+        if (rest < 0.01f && fabsf(i_leit) < 8.0f) {
+            beste_rest = rest;
+            beste_schiebung = schieb;
+            break;
+        }
+        if (rest < beste_rest) { beste_rest = rest; beste_schiebung = schieb; }
+    }
+    for (int i = 0; i < a->nsurf; ++i) a->surf[i].x += beste_schiebung;
+    float i_leit = 0.0f;
+    float rest = blade_trim_einmal(a, v_ms, &i_leit);
+    if (getenv("BLADE_TRIMM"))
+        printf("getrimmt bei %.0f m/s: Leitwerk %.2f Grad, Rest %.4f, "
+               "Schwerpunkt um %+.2f m verschoben\n",
+               v_ms, i_leit, rest, -beste_schiebung);
+}
+
+void blade_step_one(struct blade_state *s, const struct blade_aircraft *a,
                            float dt, float stick_roll, float stick_pitch,
                            float rudder, float throttle, float flaps,
                            int brake, int gear_down) {

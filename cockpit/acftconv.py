@@ -18,6 +18,7 @@ irgendeine. Sie sagt in `sim/aero`, welche Flugmodelldatei dazugehoert.
 Gelesen werden JSBSim (`<fdm_config>`, auch mit ausgelagerten Teilen
 `<metrics file="Systems/..."/>`) und YASim.
 """
+import io
 import math
 import os
 import re
@@ -309,7 +310,9 @@ def convert_yasim(path, out_path):
         # Und darunter die Geometrie selbst: dieselbe Datei fuettert damit
         # beide Modelle -- das alte liest die Tabellen und ueberliest den
         # Rest, das neue nimmt die Flaechen.
-        geo = yasim_geometry(root, mass_kg)
+        lasten = zuladung(os.path.dirname(os.path.dirname(os.path.abspath(path)))
+                          or os.path.dirname(os.path.abspath(path)))
+        geo = yasim_geometry(root, mass_kg, lasten)
         if geo:
             getrimmt = trimmen(geo[0], mass_kg, v_cru)
             write_geometry(f, geo, mass_kg)
@@ -411,7 +414,7 @@ def _controls(node):
     return anteile
 
 
-def yasim_geometry(root, mass_kg=0.0):
+def yasim_geometry(root, mass_kg=0.0, lasten=None):
     """Liefert (flaechen, beine, flaeche_m2, spannweite_m) oder None."""
     flaechen = []
     for tag in ("wing", "mstab", "hstab", "vstab"):
@@ -474,7 +477,7 @@ def yasim_geometry(root, mass_kg=0.0):
     traegheit = None
     schwer = None
     if mass_kg > 0.0:
-        erg = massenpunkte(root, flaechen, mass_kg)
+        erg = massenpunkte(root, flaechen, mass_kg, lasten)
         if erg:
             schwer, traegheit = erg
 
@@ -675,7 +678,49 @@ def jsbsim_geometry(root, stall_deg=16.0):
 
     return flaechen, beine, S_w, b_w, traegheit, "JSBSim-Abmessungen", -0.1
 
-def massenpunkte(root, flaechen, mass_kg):
+
+def zuladung(verzeichnis):
+    """Was in den Zuladungsplaetzen steht: Pilot, Mitflieger, Gepaeck.
+
+    YASim haengt sie an Eigenschaften -- `mass-prop="/sim/weight[0]/weight-lb"`
+    -- und die Zahl dazu steht woanders, in einer der XML-Dateien des
+    Flugzeugs:
+
+        <weight n="0"><name>Pilot</name><weight-lb>180</weight-lb></weight>
+
+    Ohne diese Zahl fehlt beim Long-EZ ein Pilot von 82 kg, der einen Meter
+    vor dem Schwerpunkt sitzt -- und der Schwerpunkt wandert so weit nach
+    hinten, dass die Hauptraeder davor liegen.  Das Flugzeug kippt dann am
+    Boden nach hinten, noch bevor es rollt.
+    """
+    tabelle = {}
+    muster = re.compile(r'<weight\s+n\s*=\s*"(\d+)"(.*?)</weight>', re.S)
+    zahl = re.compile(r"<weight-lb>\s*([\d.]+)\s*</weight-lb>")
+    gesehen = set()
+    for wurzel, _dirs, dateien in os.walk(verzeichnis):
+        tiefe = wurzel[len(verzeichnis):].count(os.sep)
+        if tiefe > 2:
+            continue
+        for name in dateien:
+            if not name.endswith(".xml"):
+                continue
+            pfad = os.path.join(wurzel, name)
+            if pfad in gesehen:
+                continue
+            gesehen.add(pfad)
+            try:
+                text = io.open(pfad, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            if "<weight" not in text:
+                continue
+            for n, block in muster.findall(text):
+                m = zahl.search(block)
+                if m and int(n) not in tabelle:
+                    tabelle[int(n)] = float(m.group(1))
+    return tabelle
+
+def massenpunkte(root, flaechen, mass_kg, lasten=None):
     """Der Schwerpunkt aus der Masseverteilung, nicht aus einer Faustregel.
 
     YASim macht es genauso: Die Leermasse wird ueber die Bauteile verteilt --
@@ -705,6 +750,11 @@ def massenpunkte(root, flaechen, mass_kg):
             zu(m, _f(b, "x"), _f(b, "y"), _f(b, "z"))
     for w in root.findall(".//weight"):
         m = _f(w, "mass-lbs") * LB_TO_KG
+        if m <= 0.0 and lasten:
+            # Der Platz, auf den die Eigenschaft zeigt: /sim/weight[0]/...
+            treffer = re.search(r"weight\[(\d+)\]", w.get("mass-prop", ""))
+            if treffer and int(treffer.group(1)) in lasten:
+                m = lasten[int(treffer.group(1))] * LB_TO_KG
         if m <= 0.0 and "pilot" in w.get("mass-prop", ""):
             # Der Pilot haengt in YASim an einer Eigenschaft, nicht an einer
             # Zahl -- seine Masse steht also nirgends in der Datei.  Sie
