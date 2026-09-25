@@ -319,11 +319,13 @@ static void blade_trim(struct blade_aircraft *a, float v_ms) {
     }
 }
 
-void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
-                float stick_roll, float stick_pitch, float rudder, float throttle,
-                float flaps, int brake, int gear_down) {
+/* Ein Schritt des Modells.  Nach aussen sichtbar ist blade_step darunter:
+   Es zerlegt den Bildabstand in kleine Schritte. */
+static void blade_step_one(struct blade_state *s, const struct blade_aircraft *a,
+                           float dt, float stick_roll, float stick_pitch,
+                           float rudder, float throttle, float flaps,
+                           int brake, int gear_down) {
     if (dt <= 0.0f) return;
-    if (dt > 0.05f) dt = 0.05f;          /* lieber langsamer als gesprengt */
 
     if (!s->engine_on) throttle = 0.0f;
     float rpm_want = s->engine_on ? a->rpm_idle + throttle * (a->rpm_max - a->rpm_idle) : 0.0f;
@@ -395,11 +397,20 @@ void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
         float wz = s->alt_m - (-st * g->x + ct * sp * g->y + ct * cp * g->z);
         float pen = s->ground_m - wz;
         if (pen <= 0.0f) continue;
+        if (pen > 0.5f) pen = 0.5f;            /* durchgeschlagen ist durchgeschlagen */
         touching = 1;
         /* Feder gegen die Einfederung, Daempfer gegen das Sinken.  Der
            Daempfer wirkt nur beim Einfedern, sonst zoege er das Flugzeug
            beim Ausfedern an den Boden. */
         float dmp = vd_now > 0.0f ? g->damp_ns_m * vd_now : 0.0f;
+        /* Der Daempfer darf die Sinkgeschwindigkeit in einem Zeitschritt
+           hoechstens zur Haelfte wegnehmen.  Ohne diese Grenze schaukelt
+           sich ein Aufsetzer auf: Die Daempfung eines Verkehrsflugzeugs
+           liegt bei 50 kN je m/s, und bei 38 Millisekunden Bildabstand
+           kehrt sie die Geschwindigkeit um, statt sie zu bremsen -- das
+           Flugzeug wurde dabei bis an die Hoehengrenze geschossen. */
+        float grenze = 0.5f * a->mass_kg * vd_now / dt;
+        if (dmp > grenze) dmp = grenze;
         float fz = -(g->spring_n_m * pen + dmp);
         if (fz > 0.0f) fz = 0.0f;              /* der Boden zieht nicht */
         float mu_roll = (brake && g->brake > 0.0f) ? 0.4f : 0.02f;
@@ -560,4 +571,34 @@ int blade_load(struct blade_aircraft *a, const char *path) {
     }
     blade_trim(a, a->reise_ms);
     return 1;
+}
+
+
+/* Warum in Teilschritten gerechnet wird.
+ *
+ * Die Fahrwerksfedern sind steif: 79 kN je Meter an jedem Hauptbein, dazu
+ * die Traegheit ums Rollen.  Daraus wird eine Schwingung mit rund 13 rad/s,
+ * also einer Viertelsekunde Umlauf.  Mit dem Bildabstand von 40 ms als
+ * Zeitschritt waechst diese Schwingung bei jedem Schritt ein Stueck --
+ * explizit gerechnet ist sie nicht stabil, gleichgueltig wie gut das
+ * Fahrwerk gedaempft ist.  Auf dem Geraet sah man es: Das Flugzeug stand
+ * mit angezogener Bremse und abgestelltem Motor auf der Bahn, begann zu
+ * schaukeln und wurde nach fuenf Sekunden fortgeschleudert.
+ *
+ * Fuenf Millisekunden sind kurz genug (13 rad/s * 0,005 = 0,065) und
+ * kosten wenig: Die Flaechenrechnung ist ein paar Dutzend Sinus, kein
+ * Dreiecksnetz.
+ */
+void blade_step(struct blade_state *s, const struct blade_aircraft *a, float dt,
+                float stick_roll, float stick_pitch, float rudder, float throttle,
+                float flaps, int brake, int gear_down) {
+    if (dt <= 0.0f) return;
+    if (dt > 0.2f) dt = 0.2f;              /* nach einer Ladepause nicht aufholen */
+    const float klein = 0.005f;
+    int n = (int)(dt / klein) + 1;
+    if (n > 40) n = 40;
+    float teil = dt / n;
+    for (int i = 0; i < n; ++i)
+        blade_step_one(s, a, teil, stick_roll, stick_pitch, rudder, throttle,
+                       flaps, brake, gear_down);
 }

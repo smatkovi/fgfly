@@ -1065,6 +1065,24 @@ static void load_world(void) {
     } else {
         on_runway = nland > 0 ? start_on_runway(land[0].name) : 0;
     }
+    /* Erst nachsehen, wie hoch der Boden **unter dem Flugzeug** liegt.  Die
+       Hoehe der Kachelmitte genuegt nicht: In Wien liegt der Boden unter der
+       Bahn zehn Meter tiefer als die Mitte der Kachel, und das Flugzeug
+       stand dadurch dreizehn Meter in der Luft.  Es fiel, schlug auf, und
+       der Aufprall warf es bis an die Hoehengrenze. */
+    if (have_terrain) {
+        float unten = 0.0f;
+        int gefunden = 0;
+        for (int i = 0; i < nland && !gefunden; ++i) {
+            if (is_coarse[i]) continue;
+            gefunden = terrain_height_at(&land[i], fdm.east_m, fdm.north_m, &unten);
+        }
+        if (gefunden) {
+            fdm.ground_m = unten;
+            fdm.alt_m = unten;
+        }
+    }
+
     /* Jetzt stehen Boden, Ort und Kurs - also das Flugzeug daraufstellen.
        Beim Geometriemodell ist alt_m die Hoehe des Schwerpunkts; ohne
        diesen Schritt steckt das Fahrwerk im Boden und die Feder schiesst
@@ -1783,6 +1801,9 @@ int main(int argc, char **argv) {
         printf("Flugzeug: %s (%s)\n", aircraft_data.name, acft_path);
     else
         printf("Flugzeug: %s\n", aircraft_data.name);
+    printf("  Flugmodell: %s\n", aircraft_data.has_blade
+           ? "Geometrie (Flaechenstuecke, sechs Freiheitsgrade)"
+           : "Tabellen (Beiwerte, drei Freiheitsgrade)");
     printf("  %.0f kg, %.1f m2, Schub %.0f N, %.0f-%.0f U/min, %d+%d Stuetzstellen\n",
            aircraft_data.mass_kg, aircraft_data.wing_area_m2, aircraft_data.thrust_max_n,
            aircraft_data.rpm_idle, aircraft_data.rpm_max, aircraft_data.cl_alpha.n, aircraft_data.cd_alpha.n);
@@ -2078,7 +2099,14 @@ int main(int argc, char **argv) {
             float yaw0 = fdm.heading_deg * (float)M_PI / 180.0f;
             float pit0 = fdm.pitch_deg * (float)M_PI / 180.0f;
             float eye[3] = { fdm.east_m, fdm.north_m, fdm.alt_m + 2.0f };
-            float cam_roll = fdm.roll_deg;
+            /* Die Kamera rollt **gegen** die Querlage: Legt sich das
+               Flugzeug nach rechts, kippt die Welt im Fenster nach links.
+               mat_look dreht die Oberseite der Kamera bei positivem Winkel
+               nach links, also gehoert hier das Minus hin.  In der
+               Verfolgersicht faellt der Fehler nicht auf, weil die Kamera
+               dort gar nicht mitrollt -- deshalb stimmte aussen rechts und
+               links, und in der Kanzel war es vertauscht. */
+            float cam_roll = -fdm.roll_deg;
             float cam_yaw = fdm.heading_deg, cam_pitch = fdm.pitch_deg;
             if (view_mode == 2) {
                 /* Verfolger: um das Flugzeug herum, nicht starr dahinter.
@@ -2187,10 +2215,11 @@ int main(int argc, char **argv) {
             if (getenv("COCKPIT_DEBUG"))
                 printf("      Sicht %d  Geste %d  Finger %d  Kreisen %+6.1f/%+5.1f  "
                        "Abstand %.0f m  Neigen %+5.1f/%+5.1f -> Knueppel "
-                       "%+4.2f/%+4.2f\n",
+                       "%+4.2f/%+4.2f  Boden %.1f m  Hoehe %.1f m\n",
                        view_mode, gesture, touch_now.n, orbit_az, orbit_el, chase_m,
                        tilt_roll, tilt_pitch,
-                       stick_from_tilt(tilt_roll), stick_from_tilt(tilt_pitch));
+                       stick_from_tilt(tilt_roll), stick_from_tilt(tilt_pitch),
+                       fdm.ground_m, fdm.alt_m);
             last = t;
             frames_at_last = frames;
         }
